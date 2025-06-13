@@ -4,26 +4,42 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Server, Play, Square, RotateCcw, Upload, Download } from "lucide-react";
+import { Server, Play, Square, RotateCcw, Upload, Download, AlertCircle } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 
 const AWSDeployment = () => {
   const { toast } = useToast();
+  const { awsAuth } = useAuth();
   const [isDeploying, setIsDeploying] = useState(false);
   const [config, setConfig] = useState({
-    region: "us-east-1",
+    region: awsAuth.credentials?.region || "us-east-1",
     vpcName: "vpc-production",
     instanceType: "t2.micro",
     keyPair: "my-keypair"
   });
 
   const handleDeploy = async () => {
+    if (!awsAuth.isAuthenticated) {
+      toast({
+        title: "Erro de Autenticação",
+        description: "Você precisa fazer login na AWS primeiro.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     setIsDeploying(true);
     toast({
       title: "Deployment Started",
       description: "AWS infrastructure deployment has been initiated.",
+    });
+    
+    // Aqui você enviaria as credenciais e configuração para sua API
+    console.log("Deploying with credentials:", {
+      credentials: awsAuth.credentials,
+      config
     });
     
     // Simulate deployment process
@@ -36,6 +52,39 @@ const AWSDeployment = () => {
     }, 5000);
   };
 
+  if (!awsAuth.isAuthenticated) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-3xl font-bold text-gray-900 flex items-center space-x-2">
+              <div className="w-8 h-8 bg-gradient-to-r from-orange-500 to-orange-600 rounded-lg flex items-center justify-center">
+                <Server className="h-5 w-5 text-white" />
+              </div>
+              <span>AWS Deployment</span>
+            </h2>
+            <p className="text-gray-600 mt-1">Configure and deploy your AWS infrastructure</p>
+          </div>
+        </div>
+
+        <Card className="border-0 shadow-lg">
+          <CardContent className="flex items-center justify-center py-12">
+            <div className="text-center space-y-4">
+              <AlertCircle className="h-12 w-12 text-orange-500 mx-auto" />
+              <h3 className="text-xl font-semibold text-gray-900">Autenticação Necessária</h3>
+              <p className="text-gray-600 max-w-md">
+                Você precisa fazer login na AWS com suas credenciais para acessar os recursos de deployment.
+              </p>
+              <p className="text-sm text-gray-500">
+                Clique no botão de login AWS na barra lateral para continuar.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const terraformTemplate = `terraform {
   required_version = ">=1.6.0"
   required_providers {
@@ -47,7 +96,10 @@ const AWSDeployment = () => {
 }
 
 provider "aws" {
-  region = "${config.region}"
+  region     = "${config.region}"
+  access_key = "${awsAuth.credentials?.accessKey}"
+  secret_key = "${awsAuth.credentials?.secretKey}"
+  ${awsAuth.credentials?.token ? `token = "${awsAuth.credentials.token}"` : ''}
 }
 
 resource "aws_vpc" "main" {
@@ -88,9 +140,14 @@ resource "aws_instance" "web" {
           </h2>
           <p className="text-gray-600 mt-1">Configure and deploy your AWS infrastructure</p>
         </div>
-        <Badge variant="secondary" className="bg-orange-100 text-orange-700">
-          Provider: AWS
-        </Badge>
+        <div className="flex items-center space-x-2">
+          <Badge variant="secondary" className="bg-green-100 text-green-700">
+            Autenticado
+          </Badge>
+          <Badge variant="secondary" className="bg-orange-100 text-orange-700">
+            Provider: AWS
+          </Badge>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

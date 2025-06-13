@@ -1,6 +1,8 @@
 
-import { Cloud, Server, Database, Activity, Settings, Home } from "lucide-react";
+import { Cloud, Server, Database, Activity, Settings, Home, LogIn, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/hooks/useAuth";
 
 interface SidebarProps {
   activeTab: string;
@@ -8,6 +10,8 @@ interface SidebarProps {
 }
 
 const Sidebar = ({ activeTab, setActiveTab }: SidebarProps) => {
+  const { awsAuth, azureAuth, logout } = useAuth();
+
   const menuItems = [
     { id: "dashboard", label: "Dashboard", icon: Home },
     { id: "aws", label: "AWS Deployment", icon: Server },
@@ -43,6 +47,62 @@ const Sidebar = ({ activeTab, setActiveTab }: SidebarProps) => {
           </button>
         ))}
       </nav>
+
+      <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-200 space-y-3">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">AWS</span>
+            {awsAuth.isAuthenticated ? (
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => logout('aws')}
+                  className="h-6 px-2"
+                >
+                  <LogOut className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setActiveTab('aws-login')}
+                className="h-6 px-2"
+              >
+                <LogIn className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
+          
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">Azure</span>
+            {azureAuth.isAuthenticated ? (
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => logout('azure')}
+                  className="h-6 px-2"
+                >
+                  <LogOut className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setActiveTab('azure-login')}
+                className="h-6 px-2"
+              >
+                <LogIn className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
