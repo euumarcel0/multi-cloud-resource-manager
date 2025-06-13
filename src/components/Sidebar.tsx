@@ -1,5 +1,5 @@
 
-import { Cloud, Server, Database, Activity, Settings, Home, LogIn, LogOut, Boxes } from "lucide-react";
+import { Cloud, Server, Database, Activity, Settings, Home, LogIn, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
@@ -15,7 +15,6 @@ const Sidebar = ({ activeTab, setActiveTab }: SidebarProps) => {
   const menuItems = [
     { id: "dashboard", label: "Dashboard", icon: Home },
     { id: "aws", label: "AWS Deployment", icon: Server },
-    { id: "aws-resources", label: "AWS Resources", icon: Boxes },
     { id: "azure", label: "Azure Deployment", icon: Cloud },
     { id: "logs", label: "Deployment Logs", icon: Activity },
   ];
