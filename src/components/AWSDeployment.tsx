@@ -54,7 +54,7 @@ const AWSDeployment = () => {
   };
 
   const handleDeploy = async () => {
-    if (!awsAuth.isAuthenticated) {
+    if (!awsAuth.isAuthenticated || !awsAuth.credentials) {
       toast({
         title: "Erro de Autenticação",
         description: "Você precisa fazer login na AWS primeiro.",
@@ -79,67 +79,87 @@ const AWSDeployment = () => {
     
     toast({
       title: "Deployment Iniciado",
-      description: `Executando Terraform para ${selectedCount} recurso(s) selecionado(s).`,
+      description: `Iniciando deployment AWS para ${selectedCount} recurso(s) selecionado(s).`,
     });
-    
-    console.log("Deploying resources:", selectedResources, config);
-    
-    // Simular execução do Terraform com logs em tempo real
-    const logMessages = [
-      "> terraform init",
-      "Initializing the backend...",
-      "Initializing provider plugins...",
-      "- Finding hashicorp/aws versions matching \"5.42.0\"...",
-      "- Installing hashicorp/aws v5.42.0...",
-      "- Installed hashicorp/aws v5.42.0",
-      "",
-      "Terraform has been successfully initialized!",
-      "",
-      "> terraform plan",
-      "Terraform used the selected providers to generate the following execution plan.",
-      "Resource actions are indicated with the following symbols:",
-      "  + create",
-      "",
-      "Terraform will perform the following actions:",
-      ...Object.entries(selectedResources).filter(([, selected]) => selected).map(([key]) => 
-        `  # aws_${key}.main will be created\n  + resource "aws_${key}" "main" {\n      + arn = (known after apply)\n      + id  = (known after apply)\n    }`
-      ),
-      "",
-      `Plan: ${Object.values(selectedResources).filter(Boolean).length} to add, 0 to change, 0 to destroy.`,
-      "",
-      "> terraform apply --auto-approve",
-      "aws_vpc.main: Creating...",
-      "aws_vpc.main: Creation complete after 2s [id=vpc-0123456789abcdef0]",
-      ...Object.entries(selectedResources).filter(([, selected]) => selected).slice(1).map(([key], index) => 
-        `aws_${key}.main: Creating...\naws_${key}.main: Creation complete after ${Math.floor(Math.random() * 30) + 10}s [id=${key}-${Math.random().toString(36).substr(2, 9)}]`
-      ),
-      "",
-      `Apply complete! Resources: ${Object.values(selectedResources).filter(Boolean).length} added, 0 changed, 0 destroyed.`,
-      "",
-      "Outputs:",
-      "",
-      selectedResources.vpc ? "vpc_id = \"vpc-0123456789abcdef0\"" : "",
-      selectedResources.subnet ? "subnet_id = \"subnet-0123456789abcdef0\"" : "",
-      selectedResources.ec2 ? "instance_id = \"i-0123456789abcdef0\"" : "",
-      selectedResources.securityGroup ? "security_group_id = \"sg-0123456789abcdef0\"" : "",
-    ].filter(Boolean);
 
-    // Simular logs em tempo real
-    for (let i = 0; i < logMessages.length; i++) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-      setDeploymentLogs(prev => prev + logMessages[i] + "\n");
+    try {
+        // Em um cenário real, você teria um userId do seu contexto de autenticação
+        // e o enviaria para o backend para recuperar as credenciais associadas
+        // Por enquanto, usamos um placeholder ou um ID derivado da autenticação
+        const authPayload = { 
+          // Este userId precisa ser algo que seu backend possa usar para identificar e recuperar as credenciais do usuário.
+          // Por exemplo, poderia ser um token JWT, ou um ID de sessão.
+          // Para este exemplo, usaremos um placeholder. Em produção, NUNCA envie accessKey/secretKey diretamente do frontend.
+          userId: awsAuth.credentials.accessKey // EXEMPLO: Use accessKey como um ID temporário/simulado. MUDAR EM PRODUÇÃO!
+        }; 
+
+        const response = await fetch('http://localhost:3001/api/aws/deploy', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ resources: selectedResources, config, auth: authPayload }),
+        });
+
+        // Use streaming para logs em tempo real
+        const reader = response.body?.getReader();
+        if (!reader) {
+            throw new Error("Falha ao obter o leitor de resposta.");
+        }
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const text = new TextDecoder().decode(value);
+            try {
+                const data = JSON.parse(text);
+                if (data.type === 'log') {
+                    setDeploymentLogs(prev => prev + data.message);
+                } else if (data.type === 'error') {
+                    setDeploymentLogs(prev => prev + `\nErro de Deployment: ${data.message}`);
+                    toast({
+                        title: "Deployment Falhou",
+                        description: data.message,
+                        variant: "destructive"
+                    });
+                    setIsDeploying(false);
+                    return;
+                } else if (data.type === 'success') {
+                    setDeploymentLogs(prev => prev + `\n${data.message}`);
+                    toast({
+                        title: "Deployment Completo",
+                        description: data.message,
+                    });
+                    setIsDeploying(false);
+                    return;
+                }
+            } catch (parseError) {
+                // Em caso de chunk incompleto ou não JSON, adicione como texto simples
+                setDeploymentLogs(prev => prev + text);
+            }
+        }
+
+        setIsDeploying(false);
+        toast({
+            title: "Deployment Concluído",
+            description: "Recursos AWS foram criados com sucesso.",
+        });
+
+    } catch (error) {
+        console.error("Erro no deployment do frontend:", error);
+        setDeploymentLogs(prev => prev + `\nErro: ${error instanceof Error ? error.message : String(error)}`);
+        toast({
+            title: "Erro no Deployment",
+            description: `Não foi possível iniciar o deployment: ${error instanceof Error ? error.message : String(error)}`,
+            variant: "destructive"
+        });
+        setIsDeploying(false);
     }
-    
-    setTimeout(() => {
-      setIsDeploying(false);
-      toast({
-        title: "Deployment Completo",
-        description: "Recursos AWS foram criados com sucesso.",
-      });
-    }, 1000);
   };
 
   const generateTerraformCode = () => {
+    // Esta função agora apenas gera o código para exibição, NÃO para execução real com credenciais sensíveis.
+    // As credenciais reais devem ser tratadas APENAS pelo backend.
     const awsCredentials = awsAuth.credentials && 'accessKey' in awsAuth.credentials ? awsAuth.credentials : null;
     
     let terraformCode = `terraform {
@@ -154,9 +174,9 @@ const AWSDeployment = () => {
 
 provider "aws" {
   region     = "${config.region}"
-  access_key = "${awsCredentials?.accessKey || ''}"
-  secret_key = "${awsCredentials?.secretKey || ''}"
-  ${awsCredentials?.token ? `token = "${awsCredentials.token}"` : ''}
+  access_key = "YOUR_ACCESS_KEY_PLACEHOLDER" // Substituído por placeholder para exibição
+  secret_key = "YOUR_SECRET_KEY_PLACEHOLDER" // Substituído por placeholder para exibição
+  ${awsCredentials?.token ? `token = "YOUR_SESSION_TOKEN_PLACEHOLDER"` : ''} // Substituído por placeholder para exibição
 }
 
 `;
@@ -522,7 +542,7 @@ provider "aws" {
                 )}
                 {!selectedResources.securityGroup && (
                   <div>
-                    <Label htmlFor="existingSecurityGroupId">ID do Security Group Existente</Label>
+                    <Label htmlFor="existingSecurityGroupId">ID do Security Group Existência</Label>
                     <Input
                       id="existingSecurityGroupId"
                       value={config.existingSecurityGroupId}
