@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,6 +23,8 @@ const AWSDeployment = () => {
   const { awsAuth } = useAuth();
   const [isDeploying, setIsDeploying] = useState(false);
   const [showTerraform, setShowTerraform] = useState(false);
+  const [deploymentLogs, setDeploymentLogs] = useState<string>("");
+  const [hasExecuted, setHasExecuted] = useState(false);
   
   const [selectedResources, setSelectedResources] = useState<SelectedResources>({
     vpc: false,
@@ -73,6 +74,9 @@ const AWSDeployment = () => {
     }
 
     setIsDeploying(true);
+    setHasExecuted(true);
+    setDeploymentLogs("");
+    
     toast({
       title: "Deployment Iniciado",
       description: `Executando Terraform para ${selectedCount} recurso(s) selecionado(s).`,
@@ -80,14 +84,59 @@ const AWSDeployment = () => {
     
     console.log("Deploying resources:", selectedResources, config);
     
-    // Simular execução do Terraform
+    // Simular execução do Terraform com logs em tempo real
+    const logMessages = [
+      "> terraform init",
+      "Initializing the backend...",
+      "Initializing provider plugins...",
+      "- Finding hashicorp/aws versions matching \"5.42.0\"...",
+      "- Installing hashicorp/aws v5.42.0...",
+      "- Installed hashicorp/aws v5.42.0",
+      "",
+      "Terraform has been successfully initialized!",
+      "",
+      "> terraform plan",
+      "Terraform used the selected providers to generate the following execution plan.",
+      "Resource actions are indicated with the following symbols:",
+      "  + create",
+      "",
+      "Terraform will perform the following actions:",
+      ...Object.entries(selectedResources).filter(([, selected]) => selected).map(([key]) => 
+        `  # aws_${key}.main will be created\n  + resource "aws_${key}" "main" {\n      + arn = (known after apply)\n      + id  = (known after apply)\n    }`
+      ),
+      "",
+      `Plan: ${Object.values(selectedResources).filter(Boolean).length} to add, 0 to change, 0 to destroy.`,
+      "",
+      "> terraform apply --auto-approve",
+      "aws_vpc.main: Creating...",
+      "aws_vpc.main: Creation complete after 2s [id=vpc-0123456789abcdef0]",
+      ...Object.entries(selectedResources).filter(([, selected]) => selected).slice(1).map(([key], index) => 
+        `aws_${key}.main: Creating...\naws_${key}.main: Creation complete after ${Math.floor(Math.random() * 30) + 10}s [id=${key}-${Math.random().toString(36).substr(2, 9)}]`
+      ),
+      "",
+      `Apply complete! Resources: ${Object.values(selectedResources).filter(Boolean).length} added, 0 changed, 0 destroyed.`,
+      "",
+      "Outputs:",
+      "",
+      selectedResources.vpc ? "vpc_id = \"vpc-0123456789abcdef0\"" : "",
+      selectedResources.subnet ? "subnet_id = \"subnet-0123456789abcdef0\"" : "",
+      selectedResources.ec2 ? "instance_id = \"i-0123456789abcdef0\"" : "",
+      selectedResources.securityGroup ? "security_group_id = \"sg-0123456789abcdef0\"" : "",
+    ].filter(Boolean);
+
+    // Simular logs em tempo real
+    for (let i = 0; i < logMessages.length; i++) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      setDeploymentLogs(prev => prev + logMessages[i] + "\n");
+    }
+    
     setTimeout(() => {
       setIsDeploying(false);
       toast({
         title: "Deployment Completo",
         description: "Recursos AWS foram criados com sucesso.",
       });
-    }, 5000);
+    }, 1000);
   };
 
   const generateTerraformCode = () => {
@@ -574,48 +623,34 @@ provider "aws" {
         </CardContent>
       </Card>
 
-      {/* Deployment Logs */}
-      {isDeploying && (
+      {/* Deployment Logs - Sempre visível após primeira execução */}
+      {hasExecuted && (
         <Card className="border-0 shadow-lg">
           <CardHeader>
-            <CardTitle>Logs de Execução</CardTitle>
+            <CardTitle className="flex items-center justify-between">
+              <span>Logs de Execução</span>
+              <div className="flex items-center space-x-2">
+                {isDeploying && (
+                  <div className="flex items-center space-x-2">
+                    <RotateCcw className="h-4 w-4 animate-spin text-blue-500" />
+                    <span className="text-sm text-blue-600">Executando...</span>
+                  </div>
+                )}
+                {!isDeploying && deploymentLogs && (
+                  <Badge className="bg-green-100 text-green-700">
+                    Concluído
+                  </Badge>
+                )}
+              </div>
+            </CardTitle>
             <CardDescription>
-              Saída em tempo real da execução do Terraform
+              Saída do comando: terraform apply --auto-approve
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="bg-black rounded-lg p-4 h-64 overflow-y-auto">
-              <pre className="text-green-400 text-sm font-mono">
-                {`> terraform init
-Initializing the backend...
-Initializing provider plugins...
-- Finding hashicorp/aws versions matching "5.42.0"...
-- Installing hashicorp/aws v5.42.0...
-- Installed hashicorp/aws v5.42.0
-
-Terraform has been successfully initialized!
-
-> terraform plan
-Terraform used the selected providers to generate the following execution plan.
-Resource actions are indicated with the following symbols:
-  + create
-
-Terraform will perform the following actions:
-${Object.entries(selectedResources).filter(([, selected]) => selected).map(([key]) => `
-  # aws_${key}.main will be created
-  + resource "aws_${key}" "main" {
-      + arn = (known after apply)
-      + id  = (known after apply)
-    }`).join('')}
-
-Plan: ${Object.values(selectedResources).filter(Boolean).length} to add, 0 to change, 0 to destroy.
-
-> terraform apply
-${Object.entries(selectedResources).filter(([, selected]) => selected).map(([key], index) => `
-aws_${key}.main: Creating...
-aws_${key}.main: Creation complete after ${Math.floor(Math.random() * 30) + 10}s [id=${key}-${Math.random().toString(36).substr(2, 9)}]`).join('')}
-
-Apply complete! Resources: ${Object.values(selectedResources).filter(Boolean).length} added, 0 changed, 0 destroyed.`}
+            <div className="bg-black rounded-lg p-4 h-96 overflow-y-auto">
+              <pre className="text-green-400 text-sm font-mono whitespace-pre-wrap">
+                {deploymentLogs || "Aguardando execução..."}
               </pre>
             </div>
           </CardContent>
