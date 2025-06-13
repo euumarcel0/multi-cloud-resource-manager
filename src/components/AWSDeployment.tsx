@@ -14,7 +14,7 @@ const AWSDeployment = () => {
   const { awsAuth } = useAuth();
   const [isDeploying, setIsDeploying] = useState(false);
   const [config, setConfig] = useState({
-    region: awsAuth.credentials?.region || "us-east-1",
+    region: (awsAuth.credentials && 'region' in awsAuth.credentials) ? awsAuth.credentials.region : "us-east-1",
     vpcName: "vpc-production",
     instanceType: "t2.micro",
     keyPair: "my-keypair"
@@ -85,6 +85,8 @@ const AWSDeployment = () => {
     );
   }
 
+  const awsCredentials = awsAuth.credentials && 'accessKey' in awsAuth.credentials ? awsAuth.credentials : null;
+
   const terraformTemplate = `terraform {
   required_version = ">=1.6.0"
   required_providers {
@@ -97,9 +99,9 @@ const AWSDeployment = () => {
 
 provider "aws" {
   region     = "${config.region}"
-  access_key = "${awsAuth.credentials?.accessKey}"
-  secret_key = "${awsAuth.credentials?.secretKey}"
-  ${awsAuth.credentials?.token ? `token = "${awsAuth.credentials.token}"` : ''}
+  access_key = "${awsCredentials?.accessKey || ''}"
+  secret_key = "${awsCredentials?.secretKey || ''}"
+  ${awsCredentials?.token ? `token = "${awsCredentials.token}"` : ''}
 }
 
 resource "aws_vpc" "main" {

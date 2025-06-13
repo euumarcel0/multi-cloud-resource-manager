@@ -4,6 +4,7 @@ import { AuthProvider } from "@/hooks/useAuth";
 import Sidebar from "@/components/Sidebar";
 import Dashboard from "@/components/Dashboard";
 import AWSDeployment from "@/components/AWSDeployment";
+import AWSResourceSelector from "@/components/AWSResourceSelector";
 import AzureDeployment from "@/components/AzureDeployment";
 import DeploymentLogs from "@/components/DeploymentLogs";
 import AWSLogin from "@/components/AWSLogin";
@@ -35,6 +36,7 @@ const Index = () => {
             <div className="space-y-6">
               {activeTab === "dashboard" && <Dashboard />}
               {activeTab === "aws" && <AWSDeployment />}
+              {activeTab === "aws-resources" && <AWSResourceSelector />}
               {activeTab === "azure" && <AzureDeployment />}
               {activeTab === "logs" && <DeploymentLogs />}
               {activeTab === "aws-login" && <AWSLogin onLoginSuccess={handleLoginSuccess} />}
