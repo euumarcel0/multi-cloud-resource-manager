@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Server, Play, Square, RotateCcw, Upload, Download, AlertCircle, Eye, EyeOff } from "lucide-react";
+import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -20,7 +20,7 @@ interface SelectedResources {
 
 const AWSDeployment = () => {
   const { toast } = useToast();
-  const { awsAuth } = useAuth();
+  const { awsAuth, isServerRunning } = useAuth();
   const [isDeploying, setIsDeploying] = useState(false);
   const [showTerraform, setShowTerraform] = useState(false);
   const [deploymentLogs, setDeploymentLogs] = useState<string>("");
@@ -63,6 +63,15 @@ const AWSDeployment = () => {
       return;
     }
 
+    if (!isServerRunning) {
+      toast({
+        title: "Servidor não está rodando",
+        description: "Faça login novamente para iniciar o servidor backend.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     const selectedCount = Object.values(selectedResources).filter(Boolean).length;
     if (selectedCount === 0) {
       toast({
@@ -75,23 +84,42 @@ const AWSDeployment = () => {
 
     setIsDeploying(true);
     setHasExecuted(true);
-    setDeploymentLogs("");
+    setDeploymentLogs("Iniciando deployment AWS...\n");
     
-    toast({
-      title: "Deployment Iniciado",
-      description: `Iniciando deployment AWS para ${selectedCount} recurso(s) selecionado(s).`,
-    });
-
     console.log("Iniciando deployment AWS...");
-    console.log("Recursos selecionados:", selectedResources);
-    console.log("Configuração:", config);
 
     try {
-        // Primeiro, enviar credenciais para o backend
-        const userId = awsAuth.credentials.accessKey; // Usar como ID temporário
-        console.log("Enviando credenciais para o backend...");
+        // URLs do backend - tenta primeiro o localhost, depois a URL do Lovable
+        const backendUrls = [
+            'http://localhost:3001',
+            'https://07f4b861-def3-4f19-bf23-790e3ad55fc4.lovableproject.com'
+        ];
+
+        let workingUrl = null;
         
-        const credentialsResponse = await fetch('http://localhost:3001/api/aws/credentials', {
+        // Testa qual URL funciona
+        for (const url of backendUrls) {
+            try {
+                const testResponse = await fetch(`${url}/health`, { method: 'GET' });
+                if (testResponse.ok) {
+                    workingUrl = url;
+                    console.log(`Backend encontrado em: ${url}`);
+                    break;
+                }
+            } catch (e) {
+                console.log(`Backend não encontrado em: ${url}`);
+            }
+        }
+
+        if (!workingUrl) {
+            throw new Error('Backend não está acessível. Certifique-se de que o servidor está rodando em localhost:3001');
+        }
+
+        const userId = awsAuth.credentials.accessKey;
+        setDeploymentLogs(prev => prev + "Enviando credenciais para o backend...\n");
+
+        // Enviar credenciais
+        const credentialsResponse = await fetch(`${workingUrl}/api/aws/credentials`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -106,10 +134,11 @@ const AWSDeployment = () => {
             throw new Error(`Falha ao enviar credenciais: ${credentialsResponse.status}`);
         }
 
-        console.log("Credenciais enviadas com sucesso, iniciando deployment...");
+        setDeploymentLogs(prev => prev + "Credenciais enviadas com sucesso!\n");
+        setDeploymentLogs(prev => prev + "Iniciando deployment...\n");
 
-        // Depois, iniciar o deployment
-        const response = await fetch('http://localhost:3001/api/aws/deploy', {
+        // Iniciar deployment
+        const response = await fetch(`${workingUrl}/api/aws/deploy`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -125,9 +154,7 @@ const AWSDeployment = () => {
             throw new Error(`Falha na requisição de deployment: ${response.status}`);
         }
 
-        console.log("Iniciando leitura de logs em tempo real...");
-
-        // Use streaming para logs em tempo real
+        // Processar logs em tempo real
         const reader = response.body?.getReader();
         if (!reader) {
             throw new Error("Falha ao obter o leitor de resposta.");
@@ -145,48 +172,47 @@ const AWSDeployment = () => {
                     const data = JSON.parse(line);
                     if (data.type === 'log') {
                         setDeploymentLogs(prev => prev + data.message);
-                        console.log("Log recebido:", data.message);
                     } else if (data.type === 'error') {
-                        setDeploymentLogs(prev => prev + `\nErro de Deployment: ${data.message}`);
-                        console.error("Erro de deployment:", data.message);
+                        setDeploymentLogs(prev => prev + `\nErro: ${data.message}\n`);
                         toast({
                             title: "Deployment Falhou",
                             description: data.message,
                             variant: "destructive"
                         });
                     } else if (data.type === 'success') {
-                        setDeploymentLogs(prev => prev + `\n${data.message}`);
-                        console.log("Deployment concluído:", data.message);
+                        setDeploymentLogs(prev => prev + `\n✓ ${data.message}\n`);
                         toast({
                             title: "Deployment Completo",
                             description: data.message,
                         });
                     }
                 } catch (parseError) {
-                    // Em caso de chunk incompleto ou não JSON, adicione como texto simples
-                    setDeploymentLogs(prev => prev + line);
-                    console.log("Log não-JSON recebido:", line);
+                    setDeploymentLogs(prev => prev + line + '\n');
                 }
             }
         }
 
-        setIsDeploying(false);
-        console.log("Deployment finalizado");
-
     } catch (error) {
-        console.error("Erro no deployment do frontend:", error);
-        setDeploymentLogs(prev => prev + `\nErro: ${error instanceof Error ? error.message : String(error)}`);
+        console.error("Erro no deployment:", error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        setDeploymentLogs(prev => prev + `\n❌ Erro: ${errorMessage}\n`);
+        
+        if (errorMessage.includes('Failed to fetch')) {
+            setDeploymentLogs(prev => prev + "\n💡 Dica: Certifique-se de que o servidor backend está rodando:\n");
+            setDeploymentLogs(prev => prev + "   cd backend && node server.js\n");
+        }
+        
         toast({
             title: "Erro no Deployment",
-            description: `Não foi possível iniciar o deployment: ${error instanceof Error ? error.message : String(error)}`,
+            description: errorMessage,
             variant: "destructive"
         });
+    } finally {
         setIsDeploying(false);
     }
   };
 
   const generateTerraformPreview = () => {
-    // Gera preview do código Terraform baseado nos recursos selecionados
     let terraformCode = `terraform {
   required_version = ">=1.6.0"
   required_providers {
@@ -205,7 +231,6 @@ provider "aws" {
 
 `;
 
-    // Gerar código apenas para recursos selecionados
     if (selectedResources.vpc) {
       terraformCode += `resource "aws_vpc" "main" {
   cidr_block = "${config.vpcCidr}"
@@ -368,11 +393,28 @@ provider "aws" {
           <Badge variant="secondary" className="bg-green-100 text-green-700">
             Autenticado
           </Badge>
+          <Badge variant="secondary" className={isServerRunning ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}>
+            Server: {isServerRunning ? "Online" : "Offline"}
+          </Badge>
           <Badge variant="secondary" className="bg-orange-100 text-orange-700">
             Provider: AWS
           </Badge>
         </div>
       </div>
+
+      {!isServerRunning && (
+        <Card className="border-yellow-200 bg-yellow-50">
+          <CardContent className="py-4">
+            <div className="flex items-center space-x-2 text-yellow-800">
+              <AlertCircle className="h-5 w-5" />
+              <span className="font-medium">Servidor Backend Offline</span>
+            </div>
+            <p className="text-yellow-700 text-sm mt-1">
+              Faça login novamente para inicializar o servidor backend e o Terraform.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Resource Selection */}
@@ -411,7 +453,6 @@ provider "aws" {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* ... keep existing code (configuration forms) */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="region">AWS Region</Label>
@@ -432,7 +473,6 @@ provider "aws" {
               </div>
             </div>
             
-            {/* VPC Configuration */}
             {selectedResources.vpc && (
               <div className="space-y-3 p-3 bg-blue-50 rounded-lg">
                 <h4 className="font-medium text-blue-900">Configuração VPC</h4>
@@ -455,7 +495,6 @@ provider "aws" {
               </div>
             )}
 
-            {/* Subnet Configuration */}
             {selectedResources.subnet && (
               <div className="space-y-3 p-3 bg-green-50 rounded-lg">
                 <h4 className="font-medium text-green-900">Configuração Subnet</h4>
@@ -489,7 +528,6 @@ provider "aws" {
               </div>
             )}
 
-            {/* Security Group Configuration */}
             {selectedResources.securityGroup && (
               <div className="space-y-3 p-3 bg-purple-50 rounded-lg">
                 <h4 className="font-medium text-purple-900">Configuração Security Group</h4>
@@ -515,7 +553,6 @@ provider "aws" {
               </div>
             )}
 
-            {/* EC2 Configuration */}
             {selectedResources.ec2 && (
               <div className="space-y-3 p-3 bg-orange-50 rounded-lg">
                 <h4 className="font-medium text-orange-900">Configuração EC2</h4>
@@ -555,13 +592,13 @@ provider "aws" {
             <div className="flex space-x-2 pt-4">
               <Button 
                 onClick={handleDeploy} 
-                disabled={isDeploying}
+                disabled={isDeploying || !isServerRunning}
                 className="bg-orange-600 hover:bg-orange-700"
               >
                 {isDeploying ? (
                   <>
                     <RotateCcw className="h-4 w-4 mr-2 animate-spin" />
-                    Executando terraform apply --auto-approve...
+                    Executando terraform apply...
                   </>
                 ) : (
                   <>
@@ -637,7 +674,7 @@ provider "aws" {
                 {isDeploying && (
                   <div className="flex items-center space-x-2">
                     <RotateCcw className="h-4 w-4 animate-spin text-blue-500" />
-                    <span className="text-sm text-blue-600">Executando terraform apply --auto-approve...</span>
+                    <span className="text-sm text-blue-600">Executando terraform apply...</span>
                   </div>
                 )}
                 {!isDeploying && deploymentLogs && (
@@ -648,7 +685,7 @@ provider "aws" {
               </div>
             </CardTitle>
             <CardDescription>
-              Saída do comando: terraform apply --auto-approve
+              Logs do deployment AWS
             </CardDescription>
           </CardHeader>
           <CardContent>
