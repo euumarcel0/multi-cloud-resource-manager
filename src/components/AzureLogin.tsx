@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Cloud, Eye, EyeOff } from "lucide-react";
+import { Cloud, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -16,6 +16,7 @@ const AzureLogin = ({ onLoginSuccess }: AzureLoginProps) => {
   const { toast } = useToast();
   const { loginAzure } = useAuth();
   const [showClientSecret, setShowClientSecret] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     subscriptionId: "",
     clientId: "",
@@ -24,7 +25,7 @@ const AzureLogin = ({ onLoginSuccess }: AzureLoginProps) => {
     location: "East US"
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!formData.subscriptionId || !formData.clientId || !formData.clientSecret || !formData.tenantId) {
@@ -36,12 +37,25 @@ const AzureLogin = ({ onLoginSuccess }: AzureLoginProps) => {
       return;
     }
 
-    loginAzure(formData);
-    toast({
-      title: "Login Azure Realizado",
-      description: "Você foi autenticado com sucesso no Azure.",
-    });
-    onLoginSuccess();
+    setIsLoading(true);
+
+    try {
+      await loginAzure(formData);
+      toast({
+        title: "Login Azure Realizado",
+        description: "Servidor backend iniciado e Terraform inicializado com sucesso!",
+      });
+      onLoginSuccess();
+    } catch (error) {
+      console.error('Erro no login Azure:', error);
+      toast({
+        title: "Erro no Login",
+        description: error instanceof Error ? error.message : "Falha ao fazer login no Azure",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -55,7 +69,7 @@ const AzureLogin = ({ onLoginSuccess }: AzureLoginProps) => {
             <span>Login Azure</span>
           </CardTitle>
           <CardDescription>
-            Insira suas credenciais do Azure para continuar
+            Insira suas credenciais do Azure para continuar. O servidor backend será iniciado automaticamente.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -133,8 +147,16 @@ const AzureLogin = ({ onLoginSuccess }: AzureLoginProps) => {
             <Button 
               type="submit" 
               className="w-full bg-blue-600 hover:bg-blue-700"
+              disabled={isLoading}
             >
-              Fazer Login no Azure
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Iniciando servidor e fazendo login...
+                </>
+              ) : (
+                'Fazer Login no Azure'
+              )}
             </Button>
           </form>
 

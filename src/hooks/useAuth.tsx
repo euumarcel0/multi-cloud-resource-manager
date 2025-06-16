@@ -1,5 +1,5 @@
-
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { ServerManager } from '@/utils/serverManager';
 
 interface AWSCredentials {
   accessKey: string;
@@ -24,9 +24,10 @@ interface AuthState {
 interface AuthContextType {
   awsAuth: AuthState;
   azureAuth: AuthState;
-  loginAWS: (credentials: AWSCredentials) => void;
-  loginAzure: (credentials: AzureCredentials) => void;
+  loginAWS: (credentials: AWSCredentials) => Promise<void>;
+  loginAzure: (credentials: AzureCredentials) => Promise<void>;
   logout: (provider: 'aws' | 'azure') => void;
+  isServerRunning: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -42,6 +43,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     credentials: null
   });
 
+  const [isServerRunning, setIsServerRunning] = useState(false);
+
   // Carregar credenciais do localStorage na inicialização
   useEffect(() => {
     const savedAwsAuth = localStorage.getItem('aws-auth');
@@ -56,22 +59,52 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
-  const loginAWS = (credentials: AWSCredentials) => {
+  const loginAWS = async (credentials: AWSCredentials) => {
+    console.log('Iniciando login AWS...');
+    
+    // Primeiro, iniciar o servidor
+    const serverStarted = await ServerManager.startServer();
+    if (!serverStarted) {
+      throw new Error('Falha ao iniciar o servidor backend');
+    }
+    
+    // Inicializar Terraform
+    await ServerManager.initializeTerraform();
+    
     const authState = {
       isAuthenticated: true,
       credentials
     };
+    
     setAwsAuth(authState);
+    setIsServerRunning(ServerManager.getServerStatus());
     localStorage.setItem('aws-auth', JSON.stringify(authState));
+    
+    console.log('Login AWS concluído com sucesso!');
   };
 
-  const loginAzure = (credentials: AzureCredentials) => {
+  const loginAzure = async (credentials: AzureCredentials) => {
+    console.log('Iniciando login Azure...');
+    
+    // Primeiro, iniciar o servidor
+    const serverStarted = await ServerManager.startServer();
+    if (!serverStarted) {
+      throw new Error('Falha ao iniciar o servidor backend');
+    }
+    
+    // Inicializar Terraform para Azure
+    await ServerManager.initializeTerraform();
+    
     const authState = {
       isAuthenticated: true,
       credentials
     };
+    
     setAzureAuth(authState);
+    setIsServerRunning(ServerManager.getServerStatus());
     localStorage.setItem('azure-auth', JSON.stringify(authState));
+    
+    console.log('Login Azure concluído com sucesso!');
   };
 
   const logout = (provider: 'aws' | 'azure') => {
@@ -95,7 +128,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       azureAuth,
       loginAWS,
       loginAzure,
-      logout
+      logout,
+      isServerRunning
     }}>
       {children}
     </AuthContext.Provider>

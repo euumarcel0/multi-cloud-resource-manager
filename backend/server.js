@@ -444,6 +444,84 @@ admin_password = "Password1234!" // WARNING: Hardcoded password, use a more secu
 }`;
 };
 
+// Add new endpoint for Terraform initialization
+app.post('/api/terraform/init', async (req, res) => {
+    console.log('Inicializando Terraform...');
+    
+    try {
+        if (!fs.existsSync(path.join(__dirname, 'temp'))){
+            fs.mkdirSync(path.join(__dirname, 'temp'));
+        }
+        
+        // Create a basic terraform configuration for initialization
+        const basicTerraformConfig = `terraform {
+  required_version = ">=1.6.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "5.42.0"
+    }
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~>3.0"
+    }
+  }
+}`;
+        
+        const tfFilePath = path.join(__dirname, 'temp', 'init.tf');
+        fs.writeFileSync(tfFilePath, basicTerraformConfig);
+        
+        const terraformInit = spawn('terraform', ['init'], { 
+            cwd: path.join(__dirname, 'temp'),
+            stdio: 'pipe'
+        });
+        
+        let output = '';
+        let errorOutput = '';
+        
+        terraformInit.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        terraformInit.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+        
+        terraformInit.on('close', (code) => {
+            // Clean up init file
+            try {
+                fs.unlinkSync(tfFilePath);
+            } catch (err) {
+                console.error('Error cleaning up init file:', err);
+            }
+            
+            if (code === 0) {
+                console.log('Terraform init successful');
+                res.json({ 
+                    success: true, 
+                    message: 'Terraform initialized successfully',
+                    output: output 
+                });
+            } else {
+                console.error('Terraform init failed:', errorOutput);
+                res.status(500).json({ 
+                    success: false, 
+                    message: 'Terraform initialization failed',
+                    error: errorOutput 
+                });
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error during Terraform init:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Internal server error during Terraform initialization',
+            error: error.message 
+        });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
     console.log(`Health check available at: http://localhost:${PORT}/health`);

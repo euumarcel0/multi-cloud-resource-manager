@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Server, Eye, EyeOff } from "lucide-react";
+import { Server, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -17,6 +17,7 @@ const AWSLogin = ({ onLoginSuccess }: AWSLoginProps) => {
   const { loginAWS } = useAuth();
   const [showSecretKey, setShowSecretKey] = useState(false);
   const [showToken, setShowToken] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     accessKey: "",
     secretKey: "",
@@ -24,7 +25,7 @@ const AWSLogin = ({ onLoginSuccess }: AWSLoginProps) => {
     region: "us-east-1"
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!formData.accessKey || !formData.secretKey) {
@@ -36,12 +37,25 @@ const AWSLogin = ({ onLoginSuccess }: AWSLoginProps) => {
       return;
     }
 
-    loginAWS(formData);
-    toast({
-      title: "Login AWS Realizado",
-      description: "Você foi autenticado com sucesso na AWS.",
-    });
-    onLoginSuccess();
+    setIsLoading(true);
+
+    try {
+      await loginAWS(formData);
+      toast({
+        title: "Login AWS Realizado",
+        description: "Servidor backend iniciado e Terraform inicializado com sucesso!",
+      });
+      onLoginSuccess();
+    } catch (error) {
+      console.error('Erro no login AWS:', error);
+      toast({
+        title: "Erro no Login",
+        description: error instanceof Error ? error.message : "Falha ao fazer login na AWS",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -55,7 +69,7 @@ const AWSLogin = ({ onLoginSuccess }: AWSLoginProps) => {
             <span>Login AWS</span>
           </CardTitle>
           <CardDescription>
-            Insira suas credenciais da AWS para continuar
+            Insira suas credenciais da AWS para continuar. O servidor backend será iniciado automaticamente.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -131,8 +145,16 @@ const AWSLogin = ({ onLoginSuccess }: AWSLoginProps) => {
             <Button 
               type="submit" 
               className="w-full bg-orange-600 hover:bg-orange-700"
+              disabled={isLoading}
             >
-              Fazer Login na AWS
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Iniciando servidor e fazendo login...
+                </>
+              ) : (
+                'Fazer Login na AWS'
+              )}
             </Button>
           </form>
 
