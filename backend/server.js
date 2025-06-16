@@ -3,7 +3,7 @@ const bodyParser = require('body-parser');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const cors = require('cors'); // For local development
+const cors = require('cors');
 
 const app = express();
 const PORT = 3001;
@@ -15,43 +15,62 @@ app.use(bodyParser.json());
 const awsCredentialsStore = {};
 const azureCredentialsStore = {};
 
-app.post('/api/aws/deploy', async (req, res) => {
-    const { resources, config, auth } = req.body; // auth will contain keys to retrieve credentials from store
+// Endpoint para armazenar credenciais AWS temporariamente (em produção, usar solução segura)
+app.post('/api/aws/credentials', (req, res) => {
+    const { userId, credentials } = req.body;
+    awsCredentialsStore[userId] = credentials;
+    res.json({ message: 'Credentials stored successfully' });
+});
 
-    if (!auth || !awsCredentialsStore[auth.userId]) { // Example: userId to link to stored credentials
+app.post('/api/aws/deploy', async (req, res) => {
+    const { resources, config, auth } = req.body;
+
+    if (!auth || !awsCredentialsStore[auth.userId]) {
         return res.status(401).json({ message: 'Authentication required or credentials not found.' });
     }
 
-    const awsAuthCredentials = awsCredentialsStore[auth.userId]; // Retrieve securely
+    const awsAuthCredentials = awsCredentialsStore[auth.userId];
 
-    // Generate Terraform .tf file content dynamically
+    // Generate Terraform .tf file content dynamically based on selected resources
     const terraformCode = generateTerraformCodeAWS(resources, config, awsAuthCredentials);
     const tfFilePath = path.join(__dirname, 'temp', 'aws_deployment.tf');
-    const tfVarsFilePath = path.join(__dirname, 'temp', 'terraform.tfvars'); // For sensitive data
+    const tfVarsFilePath = path.join(__dirname, 'temp', 'terraform.tfvars');
 
     try {
         if (!fs.existsSync(path.join(__dirname, 'temp'))){
             fs.mkdirSync(path.join(__dirname, 'temp'));
         }
+        
         fs.writeFileSync(tfFilePath, terraformCode);
-        // Write sensitive data to .tfvars, ensuring it's not committed to VCS
-        fs.writeFileSync(tfVarsFilePath, `access_key = "<span class="math-inline">\{awsAuthCredentials\.accessKey\}"\\nsecret\_key \= "</span>{awsAuthCredentials.secretKey}"\nregion = "${awsAuthCredentials.region}"`);
-        // Handle token if present
+        
+        // Write sensitive data to .tfvars
+        let tfVarsContent = `access_key = "${awsAuthCredentials.accessKey}"\nsecret_key = "${awsAuthCredentials.secretKey}"\nregion = "${awsAuthCredentials.region}"`;
         if (awsAuthCredentials.token) {
-            fs.appendFileSync(tfVarsFilePath, `\ntoken = "${awsAuthCredentials.token}"`);
+            tfVarsContent += `\ntoken = "${awsAuthCredentials.token}"`;
         }
+        fs.writeFileSync(tfVarsFilePath, tfVarsContent);
+
+        // Set response headers for streaming
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Transfer-Encoding', 'chunked');
 
         const logs = [];
+        
+        // Send initial message
+        res.write(JSON.stringify({ type: 'log', message: 'Iniciando Terraform init...\n' }));
+
         const terraformInit = spawn('terraform', ['init'], { cwd: path.join(__dirname, 'temp') });
 
         terraformInit.stdout.on('data', (data) => {
-            logs.push(data.toString());
-            res.write(JSON.stringify({ type: 'log', message: data.toString() }));
+            const message = data.toString();
+            logs.push(message);
+            res.write(JSON.stringify({ type: 'log', message: message }));
         });
 
         terraformInit.stderr.on('data', (data) => {
-            logs.push(`ERROR: ${data.toString()}`);
-            res.write(JSON.stringify({ type: 'log', message: `ERROR: ${data.toString()}` }));
+            const message = `ERROR: ${data.toString()}`;
+            logs.push(message);
+            res.write(JSON.stringify({ type: 'log', message: message }));
         });
 
         terraformInit.on('close', async (code) => {
@@ -60,16 +79,20 @@ app.post('/api/aws/deploy', async (req, res) => {
                 return res.end();
             }
 
+            res.write(JSON.stringify({ type: 'log', message: '\nTerraform init concluído. Iniciando apply...\n' }));
+
             const terraformApply = spawn('terraform', ['apply', '-auto-approve', `-var-file=${tfVarsFilePath}`], { cwd: path.join(__dirname, 'temp') });
 
             terraformApply.stdout.on('data', (data) => {
-                logs.push(data.toString());
-                res.write(JSON.stringify({ type: 'log', message: data.toString() }));
+                const message = data.toString();
+                logs.push(message);
+                res.write(JSON.stringify({ type: 'log', message: message }));
             });
 
             terraformApply.stderr.on('data', (data) => {
-                logs.push(`ERROR: ${data.toString()}`);
-                res.write(JSON.stringify({ type: 'log', message: `ERROR: ${data.toString()}` }));
+                const message = `ERROR: ${data.toString()}`;
+                logs.push(message);
+                res.write(JSON.stringify({ type: 'log', message: message }));
             });
 
             terraformApply.on('close', (applyCode) => {
@@ -78,9 +101,15 @@ app.post('/api/aws/deploy', async (req, res) => {
                 } else {
                     res.write(JSON.stringify({ type: 'success', message: 'Deployment complete!' }));
                 }
-                // Clean up .tf and .tfvars files in a real scenario
-                fs.unlinkSync(tfFilePath);
-                fs.unlinkSync(tfVarsFilePath);
+                
+                // Clean up files
+                try {
+                    fs.unlinkSync(tfFilePath);
+                    fs.unlinkSync(tfVarsFilePath);
+                } catch (err) {
+                    console.error('Error cleaning up files:', err);
+                }
+                
                 res.end();
             });
         });
@@ -94,54 +123,55 @@ app.post('/api/aws/deploy', async (req, res) => {
 // Function to generate AWS Terraform code based on selected resources and config
 const generateTerraformCodeAWS = (resources, config, authCredentials) => {
     let code = `terraform {
-required_version = ">=1.6.0"
-required_providers {
-aws = {
-  source  = "hashicorp/aws"
-  version = "5.42.0"
-}
-}
+  required_version = ">=1.6.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "5.42.0"
+    }
+  }
 }
 
 provider "aws" {
-region = var.region
-access_key = var.access_key
-secret_key = var.secret_key
-${authCredentials.token ? 'token = var.token' : ''}
+  region = var.region
+  access_key = var.access_key
+  secret_key = var.secret_key
+${authCredentials.token ? '  token = var.token' : ''}
 }
 
 variable "region" {
-description = "AWS region"
-type        = string
+  description = "AWS region"
+  type        = string
 }
 
 variable "access_key" {
-description = "AWS Access Key"
-type        = string
-sensitive   = true
+  description = "AWS Access Key"
+  type        = string
+  sensitive   = true
 }
 
 variable "secret_key" {
-description = "AWS Secret Key"
-type        = string
-sensitive   = true
+  description = "AWS Secret Key"
+  type        = string
+  sensitive   = true
 }
 
 ${authCredentials.token ? `variable "token" {
-description = "AWS Session Token"
-type        = string
-sensitive   = true
+  description = "AWS Session Token"
+  type        = string
+  sensitive   = true
 }` : ''}
 
 `;
 
+    // Only generate code for selected resources
     if (resources.vpc) {
         code += `
 resource "aws_vpc" "main" {
-cidr_block = "<span class="math-inline">\{config\.vpcCidr\}"
-tags \= \{
-Name \= "</span>{config.vpcName}"
-}
+  cidr_block = "${config.vpcCidr}"
+  tags = {
+    Name = "${config.vpcName}"
+  }
 }
 `;
     }
@@ -149,10 +179,10 @@ Name \= "</span>{config.vpcName}"
     if (resources.internetGateway) {
         code += `
 resource "aws_internet_gateway" "main" {
-vpc_id = ${resources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
-tags = {
-Name = "main-igw"
-}
+  vpc_id = ${resources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
+  tags = {
+    Name = "main-igw"
+  }
 }
 `;
     }
@@ -160,11 +190,11 @@ Name = "main-igw"
     if (resources.subnet) {
         code += `
 resource "aws_subnet" "public" {
-vpc_id     = ${resources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
-cidr_block = "<span class="math-inline">\{config\.subnetCidr\}"
-tags \= \{
-Name \= "</span>{config.subnetName}"
-}
+  vpc_id     = ${resources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
+  cidr_block = "${config.subnetCidr}"
+  tags = {
+    Name = "${config.subnetName}"
+  }
 }
 `;
     }
@@ -172,34 +202,34 @@ Name \= "</span>{config.subnetName}"
     if (resources.securityGroup) {
         code += `
 resource "aws_security_group" "web" {
-name        = "${config.sgName}"
-description = "Security group for web servers"
-vpc_id      = ${resources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
+  name        = "${config.sgName}"
+  description = "Security group for web servers"
+  vpc_id      = ${resources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
 
-ingress {
-from_port   = 22
-to_port     = 22
-protocol    = "tcp"
-cidr_blocks = ["0.0.0.0/0"]
-}
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-ingress {
-from_port   = 80
-to_port     = 80
-protocol    = "tcp"
-cidr_blocks = ["0.0.0.0/0"]
-}
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-egress {
-from_port   = 0
-to_port     = 0
-protocol    = "-1"
-cidr_blocks = ["0.0.0.0/0"]
-}
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-tags = {
-Name = "${config.sgName}"
-}
+  tags = {
+    Name = "${config.sgName}"
+  }
 }
 `;
     }
@@ -221,18 +251,19 @@ Name = "${config.sgName}"
 
         code += `
 resource "aws_instance" "web" {
-ami           = "ami-0c02fb55956c7d316"
-instance_type = "<span class="math-inline">\{config\.instanceType\}"
-key\_name      \= "</span>{config.keyPair}"
-${subnetRef}
-${securityGroupRef}
+  ami           = "ami-0c02fb55956c7d316"
+  instance_type = "${config.instanceType}"
+  key_name      = "${config.keyPair}"
+  ${subnetRef}
+  ${securityGroupRef}
 
-tags = {
-Name = "web-server"
-}
+  tags = {
+    Name = "web-server"
+  }
 }
 `;
     }
+
     return code;
 };
 
@@ -255,7 +286,7 @@ app.post('/api/azure/deploy', async (req, res) => {
             fs.mkdirSync(path.join(__dirname, 'temp'));
         }
         fs.writeFileSync(tfFilePath, terraformCode);
-        fs.writeFileSync(tfVarsFilePath, `subscription_id = "<span class="math-inline">\{azureAuthCredentials\.subscriptionId\}"\\nclient\_id \= "</span>{azureAuthCredentials.clientId}"\nclient_secret = "<span class="math-inline">\{azureAuthCredentials\.clientSecret\}"\\ntenant\_id \= "</span>{azureAuthCredentials.tenantId}"\nlocation = "${azureAuthCredentials.location}"`);
+        fs.writeFileSync(tfVarsFilePath, `subscription_id = "${azureAuthCredentials.subscriptionId}"\nclient_id = "${azureAuthCredentials.clientId}"\nclient_secret = "${azureAuthCredentials.clientSecret}"\ntenant_id = "${azureAuthCredentials.tenantId}"\nlocation = "${azureAuthCredentials.location}"`);
 
 
         const logs = [];
@@ -356,26 +387,26 @@ type        = string
 }
 
 resource "azurerm_resource_group" "main" {
-name     = "<span class="math-inline">\{config\.resourceGroup\}"
-<6\>location \= var\.location
-\}
-resource "azurerm\_virtual\_network" "main" \{
-name                \= "vnet\-main"
-<7\>address\_space       \= \["10\.0\.0\.0/16"\]
-location            \= azurerm\_resource\_group\.main\.location
-resource\_group\_name \= azurerm\_resource\_group\.main\.name</6\>
-\}
-resource "azurerm\_subnet" "internal" \{
-name                 \= "internal"
-resource\_group\_name  \= azurerm\_resource\_group\.main\.name
-virtual\_network\_name \= azurerm\_virtual\_network\.main\.name
-address\_prefixes</7\>     \= \["10\.0\.2\.0/24"\]
-\}
-resource "azurerm\_linux\_virtual\_machine" "main" \{
-name                \= "vm\-main"
-resource\_group\_name \= azurerm\_resource\_group\.main\.name
-location            \= azurerm\_resource\_group\.main\.location
-size                \= "</span>{config.vmSize}"
+name     = "${config.resourceGroup}"
+location = var.location
+}
+resource "azurerm_virtual_network" "main" {
+name                = "vnet-main"
+address_space       = ["10.0.0.0/16"]
+location            = azurerm_resource_group.main.location
+resource_group_name = azurerm_resource_group.main.name
+}
+resource "azurerm_subnet" "internal" {
+name                 = "internal"
+resource_group_name  = azurerm_resource_group.main.name
+virtual_network_name = azurerm_virtual_network.main.name
+address_prefixes     = ["10.0.2.0/24"]
+}
+resource "azurerm_linux_virtual_machine" "main" {
+name                = "vm-main"
+resource_group_name = azurerm_resource_group.main.name
+location            = azurerm_resource_group.main.location
+size                = "${config.vmSize}"
 admin_username      = "${config.adminUsername}"
 
 disable_password_authentication = false

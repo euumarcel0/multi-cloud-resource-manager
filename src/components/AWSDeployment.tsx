@@ -41,12 +41,12 @@ const AWSDeployment = () => {
     vpcCidr: "10.0.0.0/16",
     subnetName: "public-subnet", 
     subnetCidr: "10.0.1.0/24",
-    existingVpcId: "", // Para quando criar subnet sem VPC
+    existingVpcId: "",
     instanceType: "t2.micro",
     keyPair: "my-keypair",
     sgName: "web-security-group",
-    existingSubnetId: "", // Para quando criar EC2 sem subnet
-    existingSecurityGroupId: "" // Para quando criar EC2 sem security group
+    existingSubnetId: "",
+    existingSecurityGroupId: ""
   });
 
   const handleResourceChange = (resource: keyof SelectedResources, checked: boolean) => {
@@ -83,22 +83,30 @@ const AWSDeployment = () => {
     });
 
     try {
-        // Em um cenário real, você teria um userId do seu contexto de autenticação
-        // e o enviaria para o backend para recuperar as credenciais associadas
-        // Por enquanto, usamos um placeholder ou um ID derivado da autenticação
-        const authPayload = { 
-          // Este userId precisa ser algo que seu backend possa usar para identificar e recuperar as credenciais do usuário.
-          // Por exemplo, poderia ser um token JWT, ou um ID de sessão.
-          // Para este exemplo, usaremos um placeholder. Em produção, NUNCA envie accessKey/secretKey diretamente do frontend.
-          userId: awsAuth.credentials.accessKey // EXEMPLO: Use accessKey como um ID temporário/simulado. MUDAR EM PRODUÇÃO!
-        }; 
+        // Primeiro, enviar credenciais para o backend
+        const userId = awsAuth.credentials.accessKey; // Usar como ID temporário
+        await fetch('http://localhost:3001/api/aws/credentials', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+                userId: userId, 
+                credentials: awsAuth.credentials 
+            }),
+        });
 
+        // Depois, iniciar o deployment
         const response = await fetch('http://localhost:3001/api/aws/deploy', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ resources: selectedResources, config, auth: authPayload }),
+            body: JSON.stringify({ 
+                resources: selectedResources, 
+                config, 
+                auth: { userId: userId }
+            }),
         });
 
         // Use streaming para logs em tempo real
@@ -110,40 +118,37 @@ const AWSDeployment = () => {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            
             const text = new TextDecoder().decode(value);
-            try {
-                const data = JSON.parse(text);
-                if (data.type === 'log') {
-                    setDeploymentLogs(prev => prev + data.message);
-                } else if (data.type === 'error') {
-                    setDeploymentLogs(prev => prev + `\nErro de Deployment: ${data.message}`);
-                    toast({
-                        title: "Deployment Falhou",
-                        description: data.message,
-                        variant: "destructive"
-                    });
-                    setIsDeploying(false);
-                    return;
-                } else if (data.type === 'success') {
-                    setDeploymentLogs(prev => prev + `\n${data.message}`);
-                    toast({
-                        title: "Deployment Completo",
-                        description: data.message,
-                    });
-                    setIsDeploying(false);
-                    return;
+            const lines = text.split('\n').filter(line => line.trim());
+            
+            for (const line of lines) {
+                try {
+                    const data = JSON.parse(line);
+                    if (data.type === 'log') {
+                        setDeploymentLogs(prev => prev + data.message);
+                    } else if (data.type === 'error') {
+                        setDeploymentLogs(prev => prev + `\nErro de Deployment: ${data.message}`);
+                        toast({
+                            title: "Deployment Falhou",
+                            description: data.message,
+                            variant: "destructive"
+                        });
+                    } else if (data.type === 'success') {
+                        setDeploymentLogs(prev => prev + `\n${data.message}`);
+                        toast({
+                            title: "Deployment Completo",
+                            description: data.message,
+                        });
+                    }
+                } catch (parseError) {
+                    // Em caso de chunk incompleto ou não JSON, adicione como texto simples
+                    setDeploymentLogs(prev => prev + line);
                 }
-            } catch (parseError) {
-                // Em caso de chunk incompleto ou não JSON, adicione como texto simples
-                setDeploymentLogs(prev => prev + text);
             }
         }
 
         setIsDeploying(false);
-        toast({
-            title: "Deployment Concluído",
-            description: "Recursos AWS foram criados com sucesso.",
-        });
 
     } catch (error) {
         console.error("Erro no deployment do frontend:", error);
@@ -157,11 +162,8 @@ const AWSDeployment = () => {
     }
   };
 
-  const generateTerraformCode = () => {
-    // Esta função agora apenas gera o código para exibição, NÃO para execução real com credenciais sensíveis.
-    // As credenciais reais devem ser tratadas APENAS pelo backend.
-    const awsCredentials = awsAuth.credentials && 'accessKey' in awsAuth.credentials ? awsAuth.credentials : null;
-    
+  const generateTerraformPreview = () => {
+    // Gera preview do código Terraform baseado nos recursos selecionados
     let terraformCode = `terraform {
   required_version = ">=1.6.0"
   required_providers {
@@ -174,14 +176,13 @@ const AWSDeployment = () => {
 
 provider "aws" {
   region     = "${config.region}"
-  access_key = "YOUR_ACCESS_KEY_PLACEHOLDER" // Substituído por placeholder para exibição
-  secret_key = "YOUR_SECRET_KEY_PLACEHOLDER" // Substituído por placeholder para exibição
-  ${awsCredentials?.token ? `token = "YOUR_SESSION_TOKEN_PLACEHOLDER"` : ''} // Substituído por placeholder para exibição
+  access_key = var.access_key
+  secret_key = var.secret_key
 }
 
 `;
 
-    // VPC
+    // Gerar código apenas para recursos selecionados
     if (selectedResources.vpc) {
       terraformCode += `resource "aws_vpc" "main" {
   cidr_block = "${config.vpcCidr}"
@@ -193,34 +194,20 @@ provider "aws" {
 `;
     }
 
-    // Internet Gateway (depende da VPC)
     if (selectedResources.internetGateway) {
-      if (selectedResources.vpc) {
-        terraformCode += `resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+      terraformCode += `resource "aws_internet_gateway" "main" {
+  vpc_id = ${selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
   tags = {
     Name = "main-igw"
   }
 }
 
 `;
-      } else {
-        terraformCode += `resource "aws_internet_gateway" "main" {
-  vpc_id = "${config.existingVpcId}"
-  tags = {
-    Name = "main-igw"
-  }
-}
-
-`;
-      }
     }
 
-    // Subnet
     if (selectedResources.subnet) {
-      if (selectedResources.vpc) {
-        terraformCode += `resource "aws_subnet" "public" {
-  vpc_id     = aws_vpc.main.id
+      terraformCode += `resource "aws_subnet" "public" {
+  vpc_id     = ${selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
   cidr_block = "${config.subnetCidr}"
   tags = {
     Name = "${config.subnetName}"
@@ -228,20 +215,8 @@ provider "aws" {
 }
 
 `;
-      } else {
-        terraformCode += `resource "aws_subnet" "public" {
-  vpc_id     = "${config.existingVpcId}"
-  cidr_block = "${config.subnetCidr}"
-  tags = {
-    Name = "${config.subnetName}"
-  }
-}
-
-`;
-      }
     }
 
-    // Security Group
     if (selectedResources.securityGroup) {
       const vpcReference = selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`;
       terraformCode += `resource "aws_security_group" "web" {
@@ -278,7 +253,6 @@ provider "aws" {
 `;
     }
 
-    // EC2 Instance
     if (selectedResources.ec2) {
       let subnetRef = '';
       let securityGroupRef = '';
@@ -414,6 +388,7 @@ provider "aws" {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* ... keep existing code (configuration forms) */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="region">AWS Region</Label>
@@ -542,7 +517,7 @@ provider "aws" {
                 )}
                 {!selectedResources.securityGroup && (
                   <div>
-                    <Label htmlFor="existingSecurityGroupId">ID do Security Group Existência</Label>
+                    <Label htmlFor="existingSecurityGroupId">ID do Security Group Existente</Label>
                     <Input
                       id="existingSecurityGroupId"
                       value={config.existingSecurityGroupId}
@@ -563,7 +538,7 @@ provider "aws" {
                 {isDeploying ? (
                   <>
                     <RotateCcw className="h-4 w-4 mr-2 animate-spin" />
-                    Executando Terraform...
+                    Executando terraform apply --auto-approve...
                   </>
                 ) : (
                   <>
@@ -571,10 +546,6 @@ provider "aws" {
                     Deploy Infrastructure
                   </>
                 )}
-              </Button>
-              <Button variant="outline">
-                <Square className="h-4 w-4 mr-2" />
-                Stop
               </Button>
               <Button 
                 variant="outline" 
@@ -592,7 +563,7 @@ provider "aws" {
       {showTerraform && (
         <Card className="border-0 shadow-lg">
           <CardHeader>
-            <CardTitle>Código Terraform Gerado</CardTitle>
+            <CardTitle>Preview do Código Terraform</CardTitle>
             <CardDescription>
               Código que será executado baseado na sua seleção
             </CardDescription>
@@ -600,18 +571,8 @@ provider "aws" {
           <CardContent>
             <div className="bg-gray-900 rounded-lg p-4 overflow-x-auto">
               <pre className="text-green-400 text-sm font-mono whitespace-pre-wrap">
-                {generateTerraformCode()}
+                {generateTerraformPreview()}
               </pre>
-            </div>
-            <div className="flex space-x-2 mt-4">
-              <Button variant="outline" size="sm">
-                <Upload className="h-4 w-4 mr-2" />
-                Upload .tf File
-              </Button>
-              <Button variant="outline" size="sm">
-                <Download className="h-4 w-4 mr-2" />
-                Download
-              </Button>
             </div>
           </CardContent>
         </Card>
@@ -653,7 +614,7 @@ provider "aws" {
                 {isDeploying && (
                   <div className="flex items-center space-x-2">
                     <RotateCcw className="h-4 w-4 animate-spin text-blue-500" />
-                    <span className="text-sm text-blue-600">Executando...</span>
+                    <span className="text-sm text-blue-600">Executando terraform apply --auto-approve...</span>
                   </div>
                 )}
                 {!isDeploying && deploymentLogs && (
