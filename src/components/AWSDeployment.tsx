@@ -54,7 +54,7 @@ const AWSDeployment = () => {
   };
 
   const handleDeploy = async () => {
-    if (!awsAuth.isAuthenticated || !awsAuth.credentials) {
+    if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) {
       toast({
         title: "Erro de Autenticação",
         description: "Você precisa fazer login na AWS primeiro.",
@@ -82,10 +82,16 @@ const AWSDeployment = () => {
       description: `Iniciando deployment AWS para ${selectedCount} recurso(s) selecionado(s).`,
     });
 
+    console.log("Iniciando deployment AWS...");
+    console.log("Recursos selecionados:", selectedResources);
+    console.log("Configuração:", config);
+
     try {
         // Primeiro, enviar credenciais para o backend
         const userId = awsAuth.credentials.accessKey; // Usar como ID temporário
-        await fetch('http://localhost:3001/api/aws/credentials', {
+        console.log("Enviando credenciais para o backend...");
+        
+        const credentialsResponse = await fetch('http://localhost:3001/api/aws/credentials', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -95,6 +101,12 @@ const AWSDeployment = () => {
                 credentials: awsAuth.credentials 
             }),
         });
+
+        if (!credentialsResponse.ok) {
+            throw new Error(`Falha ao enviar credenciais: ${credentialsResponse.status}`);
+        }
+
+        console.log("Credenciais enviadas com sucesso, iniciando deployment...");
 
         // Depois, iniciar o deployment
         const response = await fetch('http://localhost:3001/api/aws/deploy', {
@@ -108,6 +120,12 @@ const AWSDeployment = () => {
                 auth: { userId: userId }
             }),
         });
+
+        if (!response.ok) {
+            throw new Error(`Falha na requisição de deployment: ${response.status}`);
+        }
+
+        console.log("Iniciando leitura de logs em tempo real...");
 
         // Use streaming para logs em tempo real
         const reader = response.body?.getReader();
@@ -127,8 +145,10 @@ const AWSDeployment = () => {
                     const data = JSON.parse(line);
                     if (data.type === 'log') {
                         setDeploymentLogs(prev => prev + data.message);
+                        console.log("Log recebido:", data.message);
                     } else if (data.type === 'error') {
                         setDeploymentLogs(prev => prev + `\nErro de Deployment: ${data.message}`);
+                        console.error("Erro de deployment:", data.message);
                         toast({
                             title: "Deployment Falhou",
                             description: data.message,
@@ -136,6 +156,7 @@ const AWSDeployment = () => {
                         });
                     } else if (data.type === 'success') {
                         setDeploymentLogs(prev => prev + `\n${data.message}`);
+                        console.log("Deployment concluído:", data.message);
                         toast({
                             title: "Deployment Completo",
                             description: data.message,
@@ -144,11 +165,13 @@ const AWSDeployment = () => {
                 } catch (parseError) {
                     // Em caso de chunk incompleto ou não JSON, adicione como texto simples
                     setDeploymentLogs(prev => prev + line);
+                    console.log("Log não-JSON recebido:", line);
                 }
             }
         }
 
         setIsDeploying(false);
+        console.log("Deployment finalizado");
 
     } catch (error) {
         console.error("Erro no deployment do frontend:", error);

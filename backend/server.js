@@ -8,8 +8,20 @@ const cors = require('cors');
 const app = express();
 const PORT = 3001;
 
-app.use(cors());
+// Configure CORS to allow requests from the frontend
+app.use(cors({
+    origin: ['http://localhost:3000', 'https://07f4b861-def3-4f19-bf23-790e3ad55fc4.lovableproject.com'],
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type'],
+    credentials: true
+}));
+
 app.use(bodyParser.json());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'Backend server is running', timestamp: new Date().toISOString() });
+});
 
 // In a real application, securely store and retrieve credentials
 const awsCredentialsStore = {};
@@ -17,19 +29,30 @@ const azureCredentialsStore = {};
 
 // Endpoint para armazenar credenciais AWS temporariamente (em produção, usar solução segura)
 app.post('/api/aws/credentials', (req, res) => {
+    console.log('Recebendo credenciais AWS...');
     const { userId, credentials } = req.body;
+    
+    if (!userId || !credentials) {
+        console.error('Dados faltando:', { userId: !!userId, credentials: !!credentials });
+        return res.status(400).json({ message: 'userId e credentials são obrigatórios' });
+    }
+    
     awsCredentialsStore[userId] = credentials;
+    console.log('Credenciais AWS armazenadas para userId:', userId);
     res.json({ message: 'Credentials stored successfully' });
 });
 
 app.post('/api/aws/deploy', async (req, res) => {
+    console.log('Iniciando deployment AWS...');
     const { resources, config, auth } = req.body;
 
     if (!auth || !awsCredentialsStore[auth.userId]) {
+        console.error('Autenticação falhou:', { auth: !!auth, credentials: !!awsCredentialsStore[auth?.userId] });
         return res.status(401).json({ message: 'Authentication required or credentials not found.' });
     }
 
     const awsAuthCredentials = awsCredentialsStore[auth.userId];
+    console.log('Credenciais encontradas, gerando Terraform...');
 
     // Generate Terraform .tf file content dynamically based on selected resources
     const terraformCode = generateTerraformCodeAWS(resources, config, awsAuthCredentials);
@@ -42,6 +65,7 @@ app.post('/api/aws/deploy', async (req, res) => {
         }
         
         fs.writeFileSync(tfFilePath, terraformCode);
+        console.log('Arquivo .tf criado:', tfFilePath);
         
         // Write sensitive data to .tfvars
         let tfVarsContent = `access_key = "${awsAuthCredentials.accessKey}"\nsecret_key = "${awsAuthCredentials.secretKey}"\nregion = "${awsAuthCredentials.region}"`;
@@ -49,6 +73,7 @@ app.post('/api/aws/deploy', async (req, res) => {
             tfVarsContent += `\ntoken = "${awsAuthCredentials.token}"`;
         }
         fs.writeFileSync(tfVarsFilePath, tfVarsContent);
+        console.log('Arquivo .tfvars criado:', tfVarsFilePath);
 
         // Set response headers for streaming
         res.setHeader('Content-Type', 'application/json');
@@ -75,11 +100,13 @@ app.post('/api/aws/deploy', async (req, res) => {
 
         terraformInit.on('close', async (code) => {
             if (code !== 0) {
+                console.error('Terraform init falhou com código:', code);
                 res.write(JSON.stringify({ type: 'error', message: 'Terraform init failed.' }));
                 return res.end();
             }
 
-            res.write(JSON.stringify({ type: 'log', message: '\nTerraform init concluído. Iniciando apply...\n' }));
+            console.log('Terraform init concluído, iniciando apply...');
+            res.write(JSON.stringify({ type: 'log', message: '\nTerraform init concluído. Iniciando apply --auto-approve...\n' }));
 
             const terraformApply = spawn('terraform', ['apply', '-auto-approve', `-var-file=${tfVarsFilePath}`], { cwd: path.join(__dirname, 'temp') });
 
@@ -97,8 +124,10 @@ app.post('/api/aws/deploy', async (req, res) => {
 
             terraformApply.on('close', (applyCode) => {
                 if (applyCode !== 0) {
+                    console.error('Terraform apply falhou com código:', applyCode);
                     res.write(JSON.stringify({ type: 'error', message: 'Terraform apply failed.' }));
                 } else {
+                    console.log('Terraform apply concluído com sucesso!');
                     res.write(JSON.stringify({ type: 'success', message: 'Deployment complete!' }));
                 }
                 
@@ -106,6 +135,7 @@ app.post('/api/aws/deploy', async (req, res) => {
                 try {
                     fs.unlinkSync(tfFilePath);
                     fs.unlinkSync(tfVarsFilePath);
+                    console.log('Arquivos temporários limpos');
                 } catch (err) {
                     console.error('Error cleaning up files:', err);
                 }
@@ -416,4 +446,5 @@ admin_password = "Password1234!" // WARNING: Hardcoded password, use a more secu
 
 app.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
+    console.log(`Health check available at: http://localhost:${PORT}/health`);
 });
