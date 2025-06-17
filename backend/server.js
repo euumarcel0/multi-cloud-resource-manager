@@ -20,6 +20,7 @@ app.use(bodyParser.json());
 
 // Health check endpoint
 app.get('/health', (req, res) => {
+    console.log('Health check requested');
     res.json({ status: 'Backend server is running', timestamp: new Date().toISOString() });
 });
 
@@ -27,19 +28,37 @@ app.get('/health', (req, res) => {
 const awsCredentialsStore = {};
 const azureCredentialsStore = {};
 
-// Endpoint para armazenar credenciais AWS temporariamente (em produção, usar solução segura)
+// Endpoint para armazenar credenciais AWS
 app.post('/api/aws/credentials', (req, res) => {
-    console.log('Recebendo credenciais AWS...');
+    console.log('📝 Recebendo credenciais AWS...');
+    console.log('Request body:', req.body);
+    
     const { userId, credentials } = req.body;
     
     if (!userId || !credentials) {
-        console.error('Dados faltando:', { userId: !!userId, credentials: !!credentials });
-        return res.status(400).json({ message: 'userId e credentials são obrigatórios' });
+        console.error('❌ Dados faltando:', { userId: !!userId, credentials: !!credentials });
+        return res.status(400).json({ 
+            success: false,
+            message: 'userId e credentials são obrigatórios' 
+        });
+    }
+    
+    // Validar credenciais AWS
+    if (!credentials.accessKey || !credentials.secretKey || !credentials.region) {
+        console.error('❌ Credenciais AWS incompletas');
+        return res.status(400).json({ 
+            success: false,
+            message: 'accessKey, secretKey e region são obrigatórios' 
+        });
     }
     
     awsCredentialsStore[userId] = credentials;
-    console.log('Credenciais AWS armazenadas para userId:', userId);
-    res.json({ message: 'Credentials stored successfully' });
+    console.log('✅ Credenciais AWS armazenadas para userId:', userId);
+    
+    res.json({ 
+        success: true,
+        message: 'Credenciais AWS armazenadas com sucesso' 
+    });
 });
 
 app.post('/api/aws/deploy', async (req, res) => {
@@ -523,6 +542,7 @@ app.post('/api/terraform/init', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Backend server running on http://localhost:${PORT}`);
-    console.log(`Health check available at: http://localhost:${PORT}/health`);
+    console.log(`🚀 Backend server running on http://localhost:${PORT}`);
+    console.log(`📋 Health check available at: http://localhost:${PORT}/health`);
+    console.log(`🔐 AWS credentials endpoint: http://localhost:${PORT}/api/aws/credentials`);
 });

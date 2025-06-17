@@ -95,7 +95,14 @@ const AWSDeployment = () => {
         
         setDeploymentLogs(prev => prev + "📡 Enviando credenciais para o backend...\n");
 
-        // Enviar credenciais
+        // Validar credenciais antes de enviar
+        if (!awsAuth.credentials.accessKey || !awsAuth.credentials.secretKey || !awsAuth.credentials.region) {
+            throw new Error('Credenciais AWS incompletas. Verifique se Access Key, Secret Key e Region estão preenchidos.');
+        }
+
+        console.log('Enviando credenciais para:', `${backendUrl}/api/aws/credentials`);
+
+        // Enviar credenciais com timeout e tratamento de erro melhorado
         const credentialsResponse = await fetch(`${backendUrl}/api/aws/credentials`, {
             method: 'POST',
             headers: {
@@ -105,10 +112,27 @@ const AWSDeployment = () => {
                 userId: userId, 
                 credentials: awsAuth.credentials 
             }),
+            signal: AbortSignal.timeout(10000) // 10 segundos timeout
         });
 
+        console.log('Response status:', credentialsResponse.status);
+
         if (!credentialsResponse.ok) {
-            throw new Error(`Falha ao enviar credenciais: ${credentialsResponse.status}`);
+            const errorText = await credentialsResponse.text();
+            console.error('Response error:', errorText);
+            
+            if (credentialsResponse.status === 404) {
+                throw new Error(`Endpoint não encontrado (404). Verifique se o servidor backend está rodando em: ${backendUrl}`);
+            } else if (credentialsResponse.status === 400) {
+                throw new Error(`Erro de validação (400): ${errorText}`);
+            } else {
+                throw new Error(`Falha ao enviar credenciais (${credentialsResponse.status}): ${errorText}`);
+            }
+        }
+
+        const credentialsResult = await credentialsResponse.json();
+        if (!credentialsResult.success) {
+            throw new Error(credentialsResult.message || 'Falha ao armazenar credenciais');
         }
 
         setDeploymentLogs(prev => prev + "✅ Credenciais enviadas com sucesso!\n");
@@ -125,6 +149,7 @@ const AWSDeployment = () => {
                 config, 
                 auth: { userId: userId }
             }),
+            signal: AbortSignal.timeout(300000) // 5 minutos timeout para deployment
         });
 
         if (!response.ok) {
@@ -172,13 +197,24 @@ const AWSDeployment = () => {
     } catch (error) {
         console.error("Erro no deployment:", error);
         const errorMessage = error instanceof Error ? error.message : String(error);
-        setDeploymentLogs(prev => prev + `\n❌ Erro: ${errorMessage}\n`);
         
-        toast({
-            title: "Erro no Deployment",
-            description: errorMessage,
-            variant: "destructive"
-        });
+        // Verificar se é erro de rede
+        if (error instanceof TypeError && error.message.includes('fetch')) {
+            const networkError = `Erro de conexão com o backend. Verifique se o servidor está rodando em: ${ServerManager.getBackendUrl()}`;
+            setDeploymentLogs(prev => prev + `\n❌ ${networkError}\n`);
+            toast({
+                title: "Erro de Conexão",
+                description: networkError,
+                variant: "destructive"
+            });
+        } else {
+            setDeploymentLogs(prev => prev + `\n❌ Erro: ${errorMessage}\n`);
+            toast({
+                title: "Erro no Deployment",
+                description: errorMessage,
+                variant: "destructive"
+            });
+        }
     } finally {
         setIsDeploying(false);
     }
