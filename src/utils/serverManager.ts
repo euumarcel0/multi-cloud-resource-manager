@@ -1,56 +1,37 @@
 
-import { MockBackend } from './mockBackend';
-
 export class ServerManager {
   private static isServerRunning = false;
   private static isInitialized = false;
-  private static isMockMode = false;
+  private static backendUrl = 'https://ctq7dlxk-3001.brs.devtunnels.ms';
 
   static async startServer(): Promise<boolean> {
-    console.log('🚀 Tentando iniciar servidor backend...');
+    console.log('🚀 Conectando ao servidor backend...');
     
-    // Tenta conectar ao servidor real primeiro
-    const realServerRunning = await this.checkRealServer();
+    // Conecta diretamente ao servidor especificado
+    const serverRunning = await this.checkRealServer();
     
-    if (realServerRunning) {
+    if (serverRunning) {
       this.isServerRunning = true;
-      this.isMockMode = false;
-      console.log('✅ Servidor backend real conectado com sucesso!');
+      console.log('✅ Servidor backend conectado com sucesso!');
       return true;
     }
 
-    // Se não conseguir conectar ao servidor real, usa modo mock
-    console.log('⚠️ Servidor backend não encontrado, ativando modo simulação...');
-    this.isServerRunning = true;
-    this.isMockMode = true;
-    
-    // Simula tempo de inicialização
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    console.log('✅ Modo simulação ativado!');
-    console.log('💡 Para usar o servidor real, execute: cd backend && node server.js');
-    return true;
+    console.log('❌ Servidor backend não está acessível');
+    return false;
   }
 
   static async checkRealServer(): Promise<boolean> {
-    const urls = [
-      'http://localhost:3001',
-      'https://07f4b861-def3-4f19-bf23-790e3ad55fc4.lovableproject.com'
-    ];
-
-    for (const url of urls) {
-      try {
-        const response = await fetch(`${url}/health`, { 
-          method: 'GET',
-          signal: AbortSignal.timeout(3000)
-        });
-        if (response.ok) {
-          console.log(`🌐 Servidor encontrado em: ${url}`);
-          return true;
-        }
-      } catch (error) {
-        console.log(`❌ Servidor não encontrado em: ${url}`);
+    try {
+      const response = await fetch(`${this.backendUrl}/health`, { 
+        method: 'GET',
+        signal: AbortSignal.timeout(5000)
+      });
+      if (response.ok) {
+        console.log(`🌐 Servidor encontrado em: ${this.backendUrl}`);
+        return true;
       }
+    } catch (error) {
+      console.log(`❌ Servidor não encontrado em: ${this.backendUrl}`);
     }
     return false;
   }
@@ -62,17 +43,25 @@ export class ServerManager {
     }
 
     try {
-      console.log('🔧 Simulando inicialização do Terraform...');
+      console.log('🔧 Inicializando Terraform...');
       
-      // Simular tempo de inicialização do Terraform
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      this.isInitialized = true;
-      console.log('✅ Terraform inicializado com sucesso!');
-      console.log('✅ Providers AWS e Azure configurados');
-      return true;
+      const response = await fetch(`${this.backendUrl}/api/terraform/init`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        this.isInitialized = true;
+        console.log('✅ Terraform inicializado com sucesso!');
+        console.log('✅ Providers AWS e Azure configurados');
+        return true;
+      } else {
+        throw new Error(`Falha na inicialização: ${response.status}`);
+      }
     } catch (error) {
-      console.error('❌ Erro ao simular inicialização do Terraform:', error);
+      console.error('❌ Erro ao inicializar Terraform:', error);
       return false;
     }
   }
@@ -81,14 +70,13 @@ export class ServerManager {
     return this.isServerRunning;
   }
 
-  static isMockModeActive(): boolean {
-    return this.isMockMode;
+  static getBackendUrl(): string {
+    return this.backendUrl;
   }
 
   static reset(): void {
     this.isServerRunning = false;
     this.isInitialized = false;
-    this.isMockMode = false;
     console.log('🔄 ServerManager resetado');
   }
 }
