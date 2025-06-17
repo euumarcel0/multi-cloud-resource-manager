@@ -5,9 +5,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle } from "lucide-react";
+import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Zap } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { ServerManager } from "@/utils/serverManager";
+import { MockBackend } from "@/utils/mockBackend";
 
 interface SelectedResources {
   vpc: boolean;
@@ -84,11 +86,40 @@ const AWSDeployment = () => {
 
     setIsDeploying(true);
     setHasExecuted(true);
-    setDeploymentLogs("Iniciando deployment AWS...\n");
+    setDeploymentLogs("🚀 Iniciando deployment AWS...\n");
     
     console.log("Iniciando deployment AWS...");
 
     try {
+        // Verifica se há servidor real disponível
+        const realServerAvailable = await ServerManager.checkRealServer();
+        
+        if (!realServerAvailable) {
+          // Usa modo mock se o servidor real não estiver disponível
+          setDeploymentLogs(prev => prev + "⚠️ Servidor backend não encontrado, usando modo simulação...\n");
+          
+          const userId = awsAuth.credentials.accessKey;
+          
+          // Simula armazenamento de credenciais
+          await MockBackend.simulateCredentialsStore(userId, awsAuth.credentials);
+          
+          // Simula deployment
+          await MockBackend.simulateAWSDeployment(
+            selectedResources, 
+            config, 
+            { userId }, 
+            (message) => setDeploymentLogs(prev => prev + message)
+          );
+          
+          toast({
+            title: "Simulação Completa",
+            description: "Deployment simulado concluído! Para deployment real, inicie o servidor backend.",
+          });
+          
+          setIsDeploying(false);
+          return;
+        }
+
         // URLs do backend - tenta primeiro o localhost, depois a URL do Lovable
         const backendUrls = [
             'http://localhost:3001',
@@ -112,11 +143,11 @@ const AWSDeployment = () => {
         }
 
         if (!workingUrl) {
-            throw new Error('Backend não está acessível. Certifique-se de que o servidor está rodando em localhost:3001');
+            throw new Error('Backend não está acessível');
         }
 
         const userId = awsAuth.credentials.accessKey;
-        setDeploymentLogs(prev => prev + "Enviando credenciais para o backend...\n");
+        setDeploymentLogs(prev => prev + "📡 Enviando credenciais para o backend...\n");
 
         // Enviar credenciais
         const credentialsResponse = await fetch(`${workingUrl}/api/aws/credentials`, {
@@ -134,8 +165,8 @@ const AWSDeployment = () => {
             throw new Error(`Falha ao enviar credenciais: ${credentialsResponse.status}`);
         }
 
-        setDeploymentLogs(prev => prev + "Credenciais enviadas com sucesso!\n");
-        setDeploymentLogs(prev => prev + "Iniciando deployment...\n");
+        setDeploymentLogs(prev => prev + "✅ Credenciais enviadas com sucesso!\n");
+        setDeploymentLogs(prev => prev + "🚀 Iniciando deployment...\n");
 
         // Iniciar deployment
         const response = await fetch(`${workingUrl}/api/aws/deploy`, {
@@ -173,14 +204,14 @@ const AWSDeployment = () => {
                     if (data.type === 'log') {
                         setDeploymentLogs(prev => prev + data.message);
                     } else if (data.type === 'error') {
-                        setDeploymentLogs(prev => prev + `\nErro: ${data.message}\n`);
+                        setDeploymentLogs(prev => prev + `\n❌ Erro: ${data.message}\n`);
                         toast({
                             title: "Deployment Falhou",
                             description: data.message,
                             variant: "destructive"
                         });
                     } else if (data.type === 'success') {
-                        setDeploymentLogs(prev => prev + `\n✓ ${data.message}\n`);
+                        setDeploymentLogs(prev => prev + `\n✅ ${data.message}\n`);
                         toast({
                             title: "Deployment Completo",
                             description: data.message,
@@ -197,16 +228,38 @@ const AWSDeployment = () => {
         const errorMessage = error instanceof Error ? error.message : String(error);
         setDeploymentLogs(prev => prev + `\n❌ Erro: ${errorMessage}\n`);
         
-        if (errorMessage.includes('Failed to fetch')) {
-            setDeploymentLogs(prev => prev + "\n💡 Dica: Certifique-se de que o servidor backend está rodando:\n");
-            setDeploymentLogs(prev => prev + "   cd backend && node server.js\n");
+        if (errorMessage.includes('Failed to fetch') || errorMessage.includes('não está acessível')) {
+            setDeploymentLogs(prev => prev + "\n💡 Usando modo simulação devido à indisponibilidade do servidor...\n");
+            
+            // Fallback para modo mock em caso de erro
+            try {
+              const userId = awsAuth.credentials.accessKey;
+              await MockBackend.simulateCredentialsStore(userId, awsAuth.credentials);
+              await MockBackend.simulateAWSDeployment(
+                selectedResources, 
+                config, 
+                { userId }, 
+                (message) => setDeploymentLogs(prev => prev + message)
+              );
+              
+              toast({
+                title: "Simulação Completa",
+                description: "Deployment simulado devido à indisponibilidade do servidor.",
+              });
+            } catch (mockError) {
+              toast({
+                title: "Erro no Deployment",
+                description: "Erro tanto no servidor real quanto na simulação.",
+                variant: "destructive"
+              });
+            }
+        } else {
+          toast({
+              title: "Erro no Deployment",
+              description: errorMessage,
+              variant: "destructive"
+          });
         }
-        
-        toast({
-            title: "Erro no Deployment",
-            description: errorMessage,
-            variant: "destructive"
-        });
     } finally {
         setIsDeploying(false);
     }
@@ -377,6 +430,8 @@ provider "aws" {
     { key: 'loadBalancer' as keyof SelectedResources, name: 'Load Balancer', description: 'Distribuidor de carga' }
   ];
 
+  const isMockMode = ServerManager.isMockModeActive();
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -396,21 +451,30 @@ provider "aws" {
           <Badge variant="secondary" className={isServerRunning ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}>
             Server: {isServerRunning ? "Online" : "Offline"}
           </Badge>
+          {isMockMode && (
+            <Badge variant="secondary" className="bg-yellow-100 text-yellow-700 flex items-center space-x-1">
+              <Zap className="h-3 w-3" />
+              <span>Modo Simulação</span>
+            </Badge>
+          )}
           <Badge variant="secondary" className="bg-orange-100 text-orange-700">
             Provider: AWS
           </Badge>
         </div>
       </div>
 
-      {!isServerRunning && (
+      {isMockMode && (
         <Card className="border-yellow-200 bg-yellow-50">
           <CardContent className="py-4">
             <div className="flex items-center space-x-2 text-yellow-800">
-              <AlertCircle className="h-5 w-5" />
-              <span className="font-medium">Servidor Backend Offline</span>
+              <Zap className="h-5 w-5" />
+              <span className="font-medium">Modo Simulação Ativo</span>
             </div>
             <p className="text-yellow-700 text-sm mt-1">
-              Faça login novamente para inicializar o servidor backend e o Terraform.
+              O servidor backend não foi encontrado. Os deployments serão simulados para demonstração.
+            </p>
+            <p className="text-yellow-600 text-xs mt-1">
+              Para deployment real, execute: <code className="bg-yellow-200 px-1 rounded">cd backend && node server.js</code>
             </p>
           </CardContent>
         </Card>
@@ -592,18 +656,18 @@ provider "aws" {
             <div className="flex space-x-2 pt-4">
               <Button 
                 onClick={handleDeploy} 
-                disabled={isDeploying || !isServerRunning}
+                disabled={isDeploying}
                 className="bg-orange-600 hover:bg-orange-700"
               >
                 {isDeploying ? (
                   <>
                     <RotateCcw className="h-4 w-4 mr-2 animate-spin" />
-                    Executando terraform apply...
+                    {isMockMode ? 'Simulando deployment...' : 'Executando terraform apply...'}
                   </>
                 ) : (
                   <>
                     <Play className="h-4 w-4 mr-2" />
-                    Deploy Infrastructure
+                    {isMockMode ? 'Simular Deployment' : 'Deploy Infrastructure'}
                   </>
                 )}
               </Button>
@@ -674,7 +738,9 @@ provider "aws" {
                 {isDeploying && (
                   <div className="flex items-center space-x-2">
                     <RotateCcw className="h-4 w-4 animate-spin text-blue-500" />
-                    <span className="text-sm text-blue-600">Executando terraform apply...</span>
+                    <span className="text-sm text-blue-600">
+                      {isMockMode ? 'Simulando deployment...' : 'Executando terraform apply...'}
+                    </span>
                   </div>
                 )}
                 {!isDeploying && deploymentLogs && (
@@ -685,7 +751,7 @@ provider "aws" {
               </div>
             </CardTitle>
             <CardDescription>
-              Logs do deployment AWS
+              Logs do deployment AWS {isMockMode && '(Simulação)'}
             </CardDescription>
           </CardHeader>
           <CardContent>
