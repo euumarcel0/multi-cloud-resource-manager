@@ -93,47 +93,15 @@ const AWSDeployment = () => {
         const backendUrl = ServerManager.getBackendUrl();
         const userId = awsAuth.credentials.accessKey;
         
-        setDeploymentLogs(prev => prev + "📡 Enviando credenciais para o backend...\n");
+        setDeploymentLogs(prev => prev + "📡 Enviando credenciais para o servidor externo...\n");
 
         // Validar credenciais antes de enviar
         if (!awsAuth.credentials.accessKey || !awsAuth.credentials.secretKey || !awsAuth.credentials.region) {
             throw new Error('Credenciais AWS incompletas. Verifique se Access Key, Secret Key e Region estão preenchidos.');
         }
 
-        console.log('Enviando credenciais para:', `${backendUrl}/api/aws/credentials`);
-
-        // Enviar credenciais com timeout e tratamento de erro melhorado
-        const credentialsResponse = await fetch(`${backendUrl}/api/aws/credentials`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ 
-                userId: userId, 
-                credentials: awsAuth.credentials 
-            }),
-            signal: AbortSignal.timeout(10000) // 10 segundos timeout
-        });
-
-        console.log('Response status:', credentialsResponse.status);
-
-        if (!credentialsResponse.ok) {
-            const errorText = await credentialsResponse.text();
-            console.error('Response error:', errorText);
-            
-            if (credentialsResponse.status === 404) {
-                throw new Error(`Endpoint não encontrado (404). Verifique se o servidor backend está rodando em: ${backendUrl}`);
-            } else if (credentialsResponse.status === 400) {
-                throw new Error(`Erro de validação (400): ${errorText}`);
-            } else {
-                throw new Error(`Falha ao enviar credenciais (${credentialsResponse.status}): ${errorText}`);
-            }
-        }
-
-        const credentialsResult = await credentialsResponse.json();
-        if (!credentialsResult.success) {
-            throw new Error(credentialsResult.message || 'Falha ao armazenar credenciais');
-        }
+        // Usar o novo método do ServerManager para enviar credenciais
+        await ServerManager.sendCredentials(userId, awsAuth.credentials);
 
         setDeploymentLogs(prev => prev + "✅ Credenciais enviadas com sucesso!\n");
         setDeploymentLogs(prev => prev + "🚀 Iniciando deployment...\n");
@@ -142,8 +110,10 @@ const AWSDeployment = () => {
         const response = await fetch(`${backendUrl}/api/aws/deploy`, {
             method: 'POST',
             headers: {
+                'Accept': 'application/json',
                 'Content-Type': 'application/json',
             },
+            mode: 'cors',
             body: JSON.stringify({ 
                 resources: selectedResources, 
                 config, 
@@ -153,7 +123,8 @@ const AWSDeployment = () => {
         });
 
         if (!response.ok) {
-            throw new Error(`Falha na requisição de deployment: ${response.status}`);
+            const errorText = await response.text();
+            throw new Error(`Falha na requisição de deployment (${response.status}): ${errorText}`);
         }
 
         // Processar logs em tempo real
@@ -200,7 +171,7 @@ const AWSDeployment = () => {
         
         // Verificar se é erro de rede
         if (error instanceof TypeError && error.message.includes('fetch')) {
-            const networkError = `Erro de conexão com o backend. Verifique se o servidor está rodando em: ${ServerManager.getBackendUrl()}`;
+            const networkError = `Erro de conexão com o backend em: ${ServerManager.getBackendUrl()}`;
             setDeploymentLogs(prev => prev + `\n❌ ${networkError}\n`);
             toast({
                 title: "Erro de Conexão",
