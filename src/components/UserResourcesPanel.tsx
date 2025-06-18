@@ -33,31 +33,46 @@ const UserResourcesPanel = () => {
   };
 
   const loadResources = async () => {
-    if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) return;
+    if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) {
+      console.log('UserResourcesPanel: Usuário não autenticado ou credenciais incompletas');
+      return;
+    }
     
     setIsLoading(true);
     try {
       const backendUrl = ServerManager.getBackendUrl();
       const userId = awsAuth.credentials.accessKey;
       
+      console.log('UserResourcesPanel: Carregando recursos para userId:', userId);
+      
       const response = await fetch(`${backendUrl}/api/aws/resources/${userId}`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
       });
 
+      console.log('UserResourcesPanel: Response status:', response.status);
+
       if (response.ok) {
         const data = await response.json();
+        console.log('UserResourcesPanel: Recursos recebidos:', data);
         setResources(data.resources || []);
+      } else {
+        console.error('UserResourcesPanel: Erro na resposta:', response.status, response.statusText);
       }
     } catch (error) {
-      console.error("Erro ao carregar recursos:", error);
+      console.error("UserResourcesPanel: Erro ao carregar recursos:", error);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
+    console.log('UserResourcesPanel: useEffect executado, isAuthenticated:', awsAuth.isAuthenticated);
     loadResources();
+    
+    // Auto-refresh resources every 30 seconds
+    const interval = setInterval(loadResources, 30000);
+    return () => clearInterval(interval);
   }, [awsAuth.isAuthenticated]);
 
   const getResourceIcon = (type: string) => {

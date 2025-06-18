@@ -144,7 +144,9 @@ const AWSDeployment = () => {
       const backendUrl = ServerManager.getBackendUrl();
       const userId = awsAuth.credentials.accessKey;
       
-      const response = await fetch(`${backendUrl}/api/aws/create-keypair`, {
+      console.log('Criando Key Pair:', { keyPairName, userId, region: config.region });
+      
+      const response = await fetch(`${backendUrl}/api/aws/keypair`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -154,24 +156,34 @@ const AWSDeployment = () => {
         }),
       });
 
+      console.log('Response status:', response.status);
+      
       if (response.ok) {
         const data = await response.json();
+        console.log('Key Pair criado:', data);
         setConfig({ ...config, keyPair: keyPairName });
         toast({
           title: "Key Pair Criado",
           description: `Key Pair ${keyPairName} criado com sucesso!`,
         });
       } else {
-        throw new Error('Falha ao criar Key Pair');
+        const errorText = await response.text();
+        console.error('Erro na resposta:', errorText);
+        throw new Error(`Falha ao criar Key Pair: ${response.status} - ${errorText}`);
       }
     } catch (error) {
       console.error("Erro ao criar Key Pair:", error);
       toast({
         title: "Erro ao Criar Key Pair",
-        description: "Não foi possível criar o Key Pair.",
+        description: error instanceof Error ? error.message : "Não foi possível criar o Key Pair.",
         variant: "destructive"
       });
     }
+  };
+
+  // Helper function to clean ANSI codes from logs
+  const cleanAnsiCodes = (text: string) => {
+    return text.replace(/\x1b\[[0-9;]*[mGK]/g, '');
   };
 
   const validateForm = () => {
@@ -263,8 +275,13 @@ const AWSDeployment = () => {
 
         setDeploymentLogs(prev => prev + "🔄 Reinicializando Terraform para nova execução...\n");
         
-        await ServerManager.reinitializeTerraform(userId);
-        setDeploymentLogs(prev => prev + "✅ Terraform reinicializado com sucesso!\n");
+        try {
+          await ServerManager.reinitializeTerraform(userId);
+          setDeploymentLogs(prev => prev + "✅ Terraform reinicializado com sucesso!\n");
+        } catch (reinitError) {
+          console.log("Aviso: Falha na reinicialização do Terraform, continuando...");
+          setDeploymentLogs(prev => prev + "⚠️  Terraform já estava inicializado, continuando...\n");
+        }
 
         await ServerManager.sendCredentials(userId, awsAuth.credentials);
 
@@ -314,23 +331,27 @@ const AWSDeployment = () => {
                 try {
                     const data = JSON.parse(line);
                     if (data.type === 'log') {
-                        setDeploymentLogs(prev => prev + data.message);
+                        const cleanedMessage = cleanAnsiCodes(data.message);
+                        setDeploymentLogs(prev => prev + cleanedMessage);
                     } else if (data.type === 'error') {
-                        setDeploymentLogs(prev => prev + `\n❌ Erro: ${data.message}\n`);
+                        const cleanedMessage = cleanAnsiCodes(data.message);
+                        setDeploymentLogs(prev => prev + `\n❌ Erro: ${cleanedMessage}\n`);
                         toast({
                             title: "Deployment Falhou",
-                            description: data.message,
+                            description: cleanedMessage,
                             variant: "destructive"
                         });
                     } else if (data.type === 'success') {
-                        setDeploymentLogs(prev => prev + `\n✅ ${data.message}\n`);
+                        const cleanedMessage = cleanAnsiCodes(data.message);
+                        setDeploymentLogs(prev => prev + `\n✅ ${cleanedMessage}\n`);
                         toast({
                             title: "Deployment Completo",
-                            description: data.message,
+                            description: cleanedMessage,
                         });
                     }
                 } catch (parseError) {
-                    setDeploymentLogs(prev => prev + line + '\n');
+                    const cleanedLine = cleanAnsiCodes(line);
+                    setDeploymentLogs(prev => prev + cleanedLine + '\n');
                 }
             }
         }

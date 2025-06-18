@@ -22,25 +22,45 @@ const DeploymentLogs = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Helper function to clean ANSI codes from logs
+  const cleanAnsiCodes = (text: string) => {
+    return text.replace(/\x1b\[[0-9;]*[mGK]/g, '');
+  };
+
   const loadUserLogs = async () => {
-    if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) return;
+    if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) {
+      console.log('DeploymentLogs: Usuário não autenticado ou credenciais incompletas');
+      return;
+    }
     
     setIsLoading(true);
     try {
       const backendUrl = ServerManager.getBackendUrl();
       const userId = awsAuth.credentials.accessKey;
       
+      console.log('DeploymentLogs: Carregando logs para userId:', userId);
+      
       const response = await fetch(`${backendUrl}/api/aws/logs/${userId}`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
       });
 
+      console.log('DeploymentLogs: Response status:', response.status);
+
       if (response.ok) {
         const data = await response.json();
-        setLogs(data.logs || []);
+        console.log('DeploymentLogs: Logs recebidos:', data);
+        // Clean ANSI codes from log messages
+        const cleanedLogs = data.logs?.map((log: LogEntry) => ({
+          ...log,
+          message: cleanAnsiCodes(log.message)
+        })) || [];
+        setLogs(cleanedLogs);
+      } else {
+        console.error('DeploymentLogs: Erro na resposta:', response.status, response.statusText);
       }
     } catch (error) {
-      console.error("Erro ao carregar logs:", error);
+      console.error("DeploymentLogs: Erro ao carregar logs:", error);
     } finally {
       setIsLoading(false);
     }
@@ -53,6 +73,8 @@ const DeploymentLogs = () => {
       const backendUrl = ServerManager.getBackendUrl();
       const userId = awsAuth.credentials.accessKey;
       
+      console.log('DeploymentLogs: Limpando logs para userId:', userId);
+      
       const response = await fetch(`${backendUrl}/api/aws/logs/${userId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -60,9 +82,12 @@ const DeploymentLogs = () => {
 
       if (response.ok) {
         setLogs([]);
+        console.log('DeploymentLogs: Logs limpos com sucesso');
+      } else {
+        console.error('DeploymentLogs: Erro ao limpar logs:', response.status);
       }
     } catch (error) {
-      console.error("Erro ao limpar logs:", error);
+      console.error("DeploymentLogs: Erro ao limpar logs:", error);
     }
   };
 
@@ -83,6 +108,7 @@ const DeploymentLogs = () => {
   };
 
   useEffect(() => {
+    console.log('DeploymentLogs: useEffect executado, isAuthenticated:', awsAuth.isAuthenticated);
     loadUserLogs();
     
     // Auto-refresh logs every 10 seconds
