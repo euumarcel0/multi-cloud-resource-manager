@@ -61,6 +61,56 @@ app.post('/api/aws/credentials', (req, res) => {
     });
 });
 
+// Add new endpoint for Terraform reinitialization
+app.post('/api/terraform/reinit', async (req, res) => {
+    console.log('🔄 Reinicializando Terraform para nova execução...');
+    
+    try {
+        const tempDir = path.join(__dirname, 'temp');
+        
+        // Clean up any existing state files
+        const stateFiles = ['.terraform.lock.hcl', 'terraform.tfstate', 'terraform.tfstate.backup'];
+        const terraformDir = path.join(tempDir, '.terraform');
+        
+        // Remove state files
+        stateFiles.forEach(file => {
+            const filePath = path.join(tempDir, file);
+            if (fs.existsSync(filePath)) {
+                try {
+                    fs.unlinkSync(filePath);
+                    console.log(`🗑️ Removido: ${file}`);
+                } catch (err) {
+                    console.warn(`⚠️ Aviso ao remover ${file}:`, err.message);
+                }
+            }
+        });
+        
+        // Remove .terraform directory
+        if (fs.existsSync(terraformDir)) {
+            try {
+                fs.rmSync(terraformDir, { recursive: true, force: true });
+                console.log('🗑️ Diretório .terraform removido');
+            } catch (err) {
+                console.warn('⚠️ Aviso ao remover .terraform:', err.message);
+            }
+        }
+        
+        console.log('✅ Terraform reinicializado - arquivos de estado limpos');
+        res.json({ 
+            success: true, 
+            message: 'Terraform reinicializado com sucesso' 
+        });
+        
+    } catch (error) {
+        console.error('❌ Erro ao reinicializar Terraform:', error);
+        res.json({ 
+            success: false, 
+            message: 'Aviso na reinicialização, mas continuando...', 
+            error: error.message 
+        });
+    }
+});
+
 app.post('/api/aws/deploy', async (req, res) => {
     console.log('Iniciando deployment AWS...');
     const { resources, config, auth } = req.body;
@@ -75,12 +125,13 @@ app.post('/api/aws/deploy', async (req, res) => {
 
     // Generate Terraform .tf file content dynamically based on selected resources
     const terraformCode = generateTerraformCodeAWS(resources, config, awsAuthCredentials);
-    const tfFilePath = path.join(__dirname, 'temp', 'aws_deployment.tf');
-    const tfVarsFilePath = path.join(__dirname, 'temp', 'terraform.tfvars');
+    const tempDir = path.join(__dirname, 'temp');
+    const tfFilePath = path.join(tempDir, 'aws_deployment.tf');
+    const tfVarsFilePath = path.join(tempDir, 'terraform.tfvars');
 
     try {
-        if (!fs.existsSync(path.join(__dirname, 'temp'))){
-            fs.mkdirSync(path.join(__dirname, 'temp'));
+        if (!fs.existsSync(tempDir)){
+            fs.mkdirSync(tempDir);
         }
         
         fs.writeFileSync(tfFilePath, terraformCode);
@@ -102,49 +153,84 @@ app.post('/api/aws/deploy', async (req, res) => {
         
         // Send initial message
         res.write(JSON.stringify({ type: 'log', message: 'Iniciando Terraform init...\n' }));
+        console.log('🚀 Executando terraform init...');
 
-        const terraformInit = spawn('terraform', ['init'], { cwd: path.join(__dirname, 'temp') });
+        const terraformInit = spawn('terraform', ['init'], { 
+            cwd: tempDir,
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        let initOutput = '';
+        let initError = '';
 
         terraformInit.stdout.on('data', (data) => {
             const message = data.toString();
+            initOutput += message;
+            console.log('TERRAFORM INIT STDOUT:', message);
             logs.push(message);
             res.write(JSON.stringify({ type: 'log', message: message }));
         });
 
         terraformInit.stderr.on('data', (data) => {
             const message = `ERROR: ${data.toString()}`;
+            initError += data.toString();
+            console.error('TERRAFORM INIT STDERR:', data.toString());
             logs.push(message);
             res.write(JSON.stringify({ type: 'log', message: message }));
         });
 
         terraformInit.on('close', async (code) => {
+            console.log(`Terraform init finalizado com código: ${code}`);
+            console.log('Init Output:', initOutput);
+            console.log('Init Error:', initError);
+            
             if (code !== 0) {
                 console.error('Terraform init falhou com código:', code);
-                res.write(JSON.stringify({ type: 'error', message: 'Terraform init failed.' }));
+                res.write(JSON.stringify({ 
+                    type: 'error', 
+                    message: `Terraform init failed with code ${code}. Error: ${initError}` 
+                }));
                 return res.end();
             }
 
             console.log('Terraform init concluído, iniciando apply...');
             res.write(JSON.stringify({ type: 'log', message: '\nTerraform init concluído. Iniciando apply --auto-approve...\n' }));
 
-            const terraformApply = spawn('terraform', ['apply', '-auto-approve', `-var-file=${tfVarsFilePath}`], { cwd: path.join(__dirname, 'temp') });
+            const terraformApply = spawn('terraform', ['apply', '-auto-approve', `-var-file=${tfVarsFilePath}`], { 
+                cwd: tempDir,
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+
+            let applyOutput = '';
+            let applyError = '';
 
             terraformApply.stdout.on('data', (data) => {
                 const message = data.toString();
+                applyOutput += message;
+                console.log('TERRAFORM APPLY STDOUT:', message);
                 logs.push(message);
                 res.write(JSON.stringify({ type: 'log', message: message }));
             });
 
             terraformApply.stderr.on('data', (data) => {
                 const message = `ERROR: ${data.toString()}`;
+                applyError += data.toString();
+                console.error('TERRAFORM APPLY STDERR:', data.toString());
                 logs.push(message);
                 res.write(JSON.stringify({ type: 'log', message: message }));
             });
 
             terraformApply.on('close', (applyCode) => {
+                console.log(`Terraform apply finalizado com código: ${applyCode}`);
+                console.log('Apply Output:', applyOutput);
+                console.log('Apply Error:', applyError);
+                
                 if (applyCode !== 0) {
                     console.error('Terraform apply falhou com código:', applyCode);
-                    res.write(JSON.stringify({ type: 'error', message: 'Terraform apply failed.' }));
+                    res.write(JSON.stringify({ 
+                        type: 'error', 
+                        message: `Terraform apply failed with code ${applyCode}. Error: ${applyError}` 
+                    }));
                 } else {
                     console.log('Terraform apply concluído com sucesso!');
                     res.write(JSON.stringify({ type: 'success', message: 'Deployment complete!' }));
