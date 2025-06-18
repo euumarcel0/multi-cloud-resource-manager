@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -198,23 +197,11 @@ const AWSDeployment = () => {
             throw new Error('Credenciais AWS incompletas. Verifique se Access Key, Secret Key e Region estão preenchidos.');
         }
 
-        // Forçar reinicialização do Terraform antes de cada deployment
-        setDeploymentLogs(prev => prev + "🔄 Reinicializando Terraform...\n");
+        // Reinicializar Terraform antes de cada deployment para evitar conflitos
+        setDeploymentLogs(prev => prev + "🔄 Reinicializando Terraform para nova execução...\n");
         
-        const reinitResponse = await fetch(`${backendUrl}/api/terraform/reinit`, {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-            },
-            mode: 'cors',
-            body: JSON.stringify({ userId: userId }),
-            signal: AbortSignal.timeout(60000)
-        });
-
-        if (reinitResponse.ok) {
-            setDeploymentLogs(prev => prev + "✅ Terraform reinicializado com sucesso!\n");
-        }
+        await ServerManager.reinitializeTerraform(userId);
+        setDeploymentLogs(prev => prev + "✅ Terraform reinicializado com sucesso!\n");
 
         // Usar o método do ServerManager para enviar credenciais
         await ServerManager.sendCredentials(userId, awsAuth.credentials);

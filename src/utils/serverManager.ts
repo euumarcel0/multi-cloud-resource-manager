@@ -7,7 +7,6 @@ export class ServerManager {
   static async startServer(): Promise<boolean> {
     console.log('🚀 Conectando ao servidor backend externo...');
     
-    // Conecta diretamente ao servidor especificado
     const serverRunning = await this.checkRealServer();
     
     if (serverRunning) {
@@ -54,11 +53,6 @@ export class ServerManager {
   }
 
   static async initializeTerraform(): Promise<boolean> {
-    if (this.isInitialized) {
-      console.log('✅ Terraform já foi inicializado');
-      return true;
-    }
-
     try {
       console.log('🔧 Inicializando Terraform no servidor externo...');
       
@@ -84,6 +78,36 @@ export class ServerManager {
     } catch (error) {
       console.error('❌ Erro ao inicializar Terraform:', error);
       return false;
+    }
+  }
+
+  static async reinitializeTerraform(userId: string): Promise<boolean> {
+    try {
+      console.log('🔄 Reinicializando Terraform para nova execução...');
+      
+      const response = await fetch(`${this.backendUrl}/api/terraform/reinit`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        mode: 'cors',
+        body: JSON.stringify({ userId: userId }),
+        signal: AbortSignal.timeout(60000)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ Terraform reinicializado com sucesso!', result);
+        return true;
+      } else {
+        const errorText = await response.text();
+        console.warn(`⚠️ Aviso na reinicialização (${response.status}): ${errorText}`);
+        return true; // Continua mesmo se reinit falhar
+      }
+    } catch (error) {
+      console.warn('⚠️ Aviso ao reinicializar Terraform:', error);
+      return true; // Continua mesmo se reinit falhar
     }
   }
 
