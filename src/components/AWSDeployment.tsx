@@ -6,10 +6,12 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Trash2, Plus } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { ServerManager } from "@/utils/serverManager";
+import UserResourcesPanel from "./UserResourcesPanel";
 
 interface SelectedResources {
   vpc: boolean;
@@ -50,17 +52,35 @@ const AWSDeployment = () => {
 
   const [config, setConfig] = useState({
     region: (awsAuth.credentials && 'region' in awsAuth.credentials) ? awsAuth.credentials.region : "us-east-1",
+    
+    // VPC Config
     vpcName: "vpc-production",
     vpcCidr: "10.0.0.0/16",
+    
+    // Subnet Config
     publicSubnetName: "public-subnet", 
     publicSubnetCidr: "10.0.1.0/24",
     privateSubnetName: "private-subnet",
     privateSubnetCidr: "10.0.2.0/24",
-    existingVpcId: "",
+    
+    // EC2 Config
     instanceType: "t2.micro",
+    instanceOs: "linux",
+    instanceName: "web-server",
+    diskSize: "8",
     keyPair: "",
+    
+    // Security Group Config
     sgName: "",
     sgDescription: "",
+    
+    // Load Balancer Config
+    lbName: "app-load-balancer",
+    lbType: "application",
+    lbScheme: "internet-facing",
+    
+    // Existing Resources
+    existingVpcId: "",
     existingSubnetId: "",
     existingSecurityGroupId: ""
   });
@@ -107,6 +127,51 @@ const AWSDeployment = () => {
     const updatedRules = [...securityGroupRules];
     updatedRules[index] = { ...updatedRules[index], [field]: value };
     setSecurityGroupRules(updatedRules);
+  };
+
+  const createKeyPair = async () => {
+    if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) {
+      toast({
+        title: "Erro de Autenticação",
+        description: "Você precisa fazer login na AWS primeiro.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      const keyPairName = `keypair-${Date.now()}`;
+      const backendUrl = ServerManager.getBackendUrl();
+      const userId = awsAuth.credentials.accessKey;
+      
+      const response = await fetch(`${backendUrl}/api/aws/create-keypair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userId, 
+          keyPairName,
+          region: config.region 
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setConfig({ ...config, keyPair: keyPairName });
+        toast({
+          title: "Key Pair Criado",
+          description: `Key Pair ${keyPairName} criado com sucesso!`,
+        });
+      } else {
+        throw new Error('Falha ao criar Key Pair');
+      }
+    } catch (error) {
+      console.error("Erro ao criar Key Pair:", error);
+      toast({
+        title: "Erro ao Criar Key Pair",
+        description: "Não foi possível criar o Key Pair.",
+        variant: "destructive"
+      });
+    }
   };
 
   const validateForm = () => {
@@ -192,24 +257,20 @@ const AWSDeployment = () => {
         
         setDeploymentLogs(prev => prev + "📡 Enviando credenciais para o servidor externo...\n");
 
-        // Validar credenciais antes de enviar
         if (!awsAuth.credentials.accessKey || !awsAuth.credentials.secretKey || !awsAuth.credentials.region) {
             throw new Error('Credenciais AWS incompletas. Verifique se Access Key, Secret Key e Region estão preenchidos.');
         }
 
-        // Reinicializar Terraform antes de cada deployment para evitar conflitos
         setDeploymentLogs(prev => prev + "🔄 Reinicializando Terraform para nova execução...\n");
         
         await ServerManager.reinitializeTerraform(userId);
         setDeploymentLogs(prev => prev + "✅ Terraform reinicializado com sucesso!\n");
 
-        // Usar o método do ServerManager para enviar credenciais
         await ServerManager.sendCredentials(userId, awsAuth.credentials);
 
         setDeploymentLogs(prev => prev + "✅ Credenciais enviadas com sucesso!\n");
         setDeploymentLogs(prev => prev + "🚀 Iniciando deployment...\n");
 
-        // Iniciar deployment
         const deploymentPayload = { 
             resources: selectedResources, 
             config: {
@@ -229,7 +290,7 @@ const AWSDeployment = () => {
             },
             mode: 'cors',
             body: JSON.stringify(deploymentPayload),
-            signal: AbortSignal.timeout(300000) // 5 minutos timeout para deployment
+            signal: AbortSignal.timeout(300000)
         });
 
         if (!response.ok) {
@@ -237,7 +298,6 @@ const AWSDeployment = () => {
             throw new Error(`Falha na requisição de deployment (${response.status}): ${errorText}`);
         }
 
-        // Processar logs em tempo real
         const reader = response.body?.getReader();
         if (!reader) {
             throw new Error("Falha ao obter o leitor de resposta.");
@@ -279,7 +339,6 @@ const AWSDeployment = () => {
         console.error("Erro no deployment:", error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         
-        // Verificar se é erro de rede
         if (error instanceof TypeError && error.message.includes('fetch')) {
             const networkError = `Erro de conexão com o backend em: ${ServerManager.getBackendUrl()}`;
             setDeploymentLogs(prev => prev + `\n❌ ${networkError}\n`);
@@ -420,24 +479,48 @@ provider "aws" {
         securityGroupRef = `vpc_security_group_ids = ["${config.existingSecurityGroupId}"]`;
       }
 
+      const amiId = config.instanceOs === 'windows' ? 'ami-0c02fb55956c7d316' : 'ami-0c02fb55956c7d316';
+
       terraformCode += `resource "aws_instance" "web" {
-  ami           = "ami-0c02fb55956c7d316"
+  ami           = "${amiId}"
   instance_type = "${config.instanceType}"
   key_name      = "${config.keyPair}"
   ${subnetRef}
   ${securityGroupRef}
   
-  tags = {
-    Name = "web-server"
+  root_block_device {
+    volume_size = ${config.diskSize}
+    volume_type = "gp3"
   }
-}
-
-data "aws_availability_zones" "available" {
-  state = "available"
+  
+  tags = {
+    Name = "${config.instanceName}"
+  }
 }
 
 `;
     }
+
+    if (selectedResources.loadBalancer) {
+      terraformCode += `resource "aws_lb" "main" {
+  name               = "${config.lbName}"
+  internal           = ${config.lbScheme === 'internal' ? 'true' : 'false'}
+  load_balancer_type = "${config.lbType}"
+  subnets            = [${selectedResources.publicSubnet ? 'aws_subnet.public.id' : `"${config.existingSubnetId}"`}]
+  
+  tags = {
+    Name = "${config.lbName}"
+  }
+}
+
+`;
+    }
+
+    terraformCode += `data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+`;
 
     return terraformCode;
   };
@@ -510,7 +593,7 @@ data "aws_availability_zones" "available" {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Resource Selection */}
         <Card className="border-0 shadow-lg">
           <CardHeader>
@@ -547,24 +630,13 @@ data "aws_availability_zones" "available" {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="region">AWS Region</Label>
-                <Input
-                  id="region"
-                  value={config.region}
-                  onChange={(e) => setConfig({ ...config, region: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label htmlFor="instanceType">Instance Type</Label>
-                <Input
-                  id="instanceType"
-                  value={config.instanceType}
-                  onChange={(e) => setConfig({ ...config, instanceType: e.target.value })}
-                  disabled={!selectedResources.ec2}
-                />
-              </div>
+            <div>
+              <Label htmlFor="region">AWS Region</Label>
+              <Input
+                id="region"
+                value={config.region}
+                onChange={(e) => setConfig({ ...config, region: e.target.value })}
+              />
             </div>
             
             {selectedResources.vpc && (
@@ -589,6 +661,23 @@ data "aws_availability_zones" "available" {
               </div>
             )}
 
+            {selectedResources.internetGateway && (
+              <div className="space-y-3 p-3 bg-indigo-50 rounded-lg">
+                <h4 className="font-medium text-indigo-900">Configuração Internet Gateway</h4>
+                {!selectedResources.vpc && (
+                  <div>
+                    <Label htmlFor="igwVpcId">ID da VPC</Label>
+                    <Input
+                      id="igwVpcId"
+                      value={config.existingVpcId}
+                      onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
+                      placeholder="vpc-xxxxxxxxx"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
             {selectedResources.publicSubnet && (
               <div className="space-y-3 p-3 bg-green-50 rounded-lg">
                 <h4 className="font-medium text-green-900">Configuração Subnet Pública</h4>
@@ -610,9 +699,9 @@ data "aws_availability_zones" "available" {
                 </div>
                 {!selectedResources.vpc && (
                   <div>
-                    <Label htmlFor="existingVpcId">ID da VPC Existente</Label>
+                    <Label htmlFor="publicSubnetVpcId">ID da VPC</Label>
                     <Input
-                      id="existingVpcId"
+                      id="publicSubnetVpcId"
                       value={config.existingVpcId}
                       onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
                       placeholder="vpc-xxxxxxxxx"
@@ -643,9 +732,9 @@ data "aws_availability_zones" "available" {
                 </div>
                 {!selectedResources.vpc && (
                   <div>
-                    <Label htmlFor="existingVpcIdPrivate">ID da VPC Existente</Label>
+                    <Label htmlFor="privateSubnetVpcId">ID da VPC</Label>
                     <Input
-                      id="existingVpcIdPrivate"
+                      id="privateSubnetVpcId"
                       value={config.existingVpcId}
                       onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
                       placeholder="vpc-xxxxxxxxx"
@@ -680,9 +769,9 @@ data "aws_availability_zones" "available" {
                 </div>
                 {!selectedResources.vpc && (
                   <div>
-                    <Label htmlFor="existingVpcIdSg">ID da VPC Existente *</Label>
+                    <Label htmlFor="sgVpcId">ID da VPC *</Label>
                     <Input
-                      id="existingVpcIdSg"
+                      id="sgVpcId"
                       value={config.existingVpcId}
                       onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
                       placeholder="vpc-xxxxxxxxx"
@@ -696,7 +785,7 @@ data "aws_availability_zones" "available" {
                     <Label>Regras de Segurança *</Label>
                     <Button 
                       type="button"
-                      variant="outline" 
+                      variant="outline"
                       size="sm" 
                       onClick={addSecurityGroupRule}
                     >
@@ -721,14 +810,18 @@ data "aws_availability_zones" "available" {
                       <div className="grid grid-cols-2 gap-2">
                         <div>
                           <Label className="text-xs">Tipo *</Label>
-                          <select 
-                            className="w-full h-9 px-3 py-2 border border-input rounded-md text-sm"
+                          <Select 
                             value={rule.type}
-                            onChange={(e) => updateSecurityGroupRule(index, 'type', e.target.value)}
+                            onValueChange={(value) => updateSecurityGroupRule(index, 'type', value)}
                           >
-                            <option value="ingress">Ingress (Entrada)</option>
-                            <option value="egress">Egress (Saída)</option>
-                          </select>
+                            <SelectTrigger className="h-9">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ingress">Ingress (Entrada)</SelectItem>
+                              <SelectItem value="egress">Egress (Saída)</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
                         <div>
                           <Label className="text-xs">Protocolo *</Label>
@@ -796,18 +889,81 @@ data "aws_availability_zones" "available" {
               <div className="space-y-3 p-3 bg-orange-50 rounded-lg">
                 <h4 className="font-medium text-orange-900">Configuração EC2</h4>
                 <div>
-                  <Label htmlFor="keyPair">Key Pair Name *</Label>
+                  <Label htmlFor="instanceName">Nome da Instância</Label>
                   <Input
-                    id="keyPair"
-                    value={config.keyPair}
-                    onChange={(e) => setConfig({ ...config, keyPair: e.target.value })}
-                    placeholder="my-keypair"
-                    required
+                    id="instanceName"
+                    value={config.instanceName}
+                    onChange={(e) => setConfig({ ...config, instanceName: e.target.value })}
+                    placeholder="web-server"
                   />
+                </div>
+                <div>
+                  <Label htmlFor="instanceType">Tipo da Instância</Label>
+                  <Select 
+                    value={config.instanceType}
+                    onValueChange={(value) => setConfig({ ...config, instanceType: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="t2.micro">t2.micro</SelectItem>
+                      <SelectItem value="t2.small">t2.small</SelectItem>
+                      <SelectItem value="t2.medium">t2.medium</SelectItem>
+                      <SelectItem value="t3.micro">t3.micro</SelectItem>
+                      <SelectItem value="t3.small">t3.small</SelectItem>
+                      <SelectItem value="t3.medium">t3.medium</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="instanceOs">Sistema Operacional</Label>
+                  <Select 
+                    value={config.instanceOs}
+                    onValueChange={(value) => setConfig({ ...config, instanceOs: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="linux">Linux</SelectItem>
+                      <SelectItem value="windows">Windows</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="diskSize">Tamanho do Disco (GB)</Label>
+                  <Input
+                    id="diskSize"
+                    type="number"
+                    value={config.diskSize}
+                    onChange={(e) => setConfig({ ...config, diskSize: e.target.value })}
+                    placeholder="8"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="keyPair">Key Pair Name *</Label>
+                  <div className="flex space-x-2">
+                    <Input
+                      id="keyPair"
+                      value={config.keyPair}
+                      onChange={(e) => setConfig({ ...config, keyPair: e.target.value })}
+                      placeholder="my-keypair"
+                      required
+                    />
+                    <Button 
+                      type="button"
+                      variant="outline"
+                      onClick={createKeyPair}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      Criar
+                    </Button>
+                  </div>
                 </div>
                 {!selectedResources.publicSubnet && !selectedResources.privateSubnet && (
                   <div>
-                    <Label htmlFor="existingSubnetId">ID da Subnet Existente</Label>
+                    <Label htmlFor="existingSubnetId">ID da Subnet</Label>
                     <Input
                       id="existingSubnetId"
                       value={config.existingSubnetId}
@@ -818,7 +974,7 @@ data "aws_availability_zones" "available" {
                 )}
                 {!selectedResources.securityGroup && (
                   <div>
-                    <Label htmlFor="existingSecurityGroupId">ID do Security Group Existente</Label>
+                    <Label htmlFor="existingSecurityGroupId">ID do Security Group</Label>
                     <Input
                       id="existingSecurityGroupId"
                       value={config.existingSecurityGroupId}
@@ -827,6 +983,52 @@ data "aws_availability_zones" "available" {
                     />
                   </div>
                 )}
+              </div>
+            )}
+
+            {selectedResources.loadBalancer && (
+              <div className="space-y-3 p-3 bg-pink-50 rounded-lg">
+                <h4 className="font-medium text-pink-900">Configuração Load Balancer</h4>
+                <div>
+                  <Label htmlFor="lbName">Nome do Load Balancer</Label>
+                  <Input
+                    id="lbName"
+                    value={config.lbName}
+                    onChange={(e) => setConfig({ ...config, lbName: e.target.value })}
+                    placeholder="app-load-balancer"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="lbType">Tipo</Label>
+                  <Select 
+                    value={config.lbType}
+                    onValueChange={(value) => setConfig({ ...config, lbType: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="application">Application</SelectItem>
+                      <SelectItem value="network">Network</SelectItem>
+                      <SelectItem value="gateway">Gateway</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="lbScheme">Esquema</Label>
+                  <Select 
+                    value={config.lbScheme}
+                    onValueChange={(value) => setConfig({ ...config, lbScheme: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="internet-facing">Internet-facing</SelectItem>
+                      <SelectItem value="internal">Internal</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             )}
 
@@ -858,6 +1060,9 @@ data "aws_availability_zones" "available" {
             </div>
           </CardContent>
         </Card>
+
+        {/* User Resources Panel */}
+        <UserResourcesPanel />
       </div>
 
       {/* Terraform Code Preview */}
@@ -928,7 +1133,7 @@ data "aws_availability_zones" "available" {
               </div>
             </CardTitle>
             <CardDescription>
-              Logs do deployment AWS
+              Logs do deployment AWS em tempo real
             </CardDescription>
           </CardHeader>
           <CardContent>
