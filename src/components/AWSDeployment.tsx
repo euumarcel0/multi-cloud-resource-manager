@@ -228,7 +228,7 @@ const AWSDeployment = () => {
   const saveCreatedResource = async (resourceId: string, resourceType: string, formData: any) => {
     try {
       const backendUrl = ServerManager.getBackendUrl();
-      const userId = awsAuth.credentials?.accessKey;
+      const userId = awsAuth.credentials && 'accessKey' in awsAuth.credentials ? awsAuth.credentials.accessKey : null;
 
       if (!userId) return;
 
@@ -239,7 +239,7 @@ const AWSDeployment = () => {
         type: resourceType,
         name: getResourceName(resourceType, formData),
         status: 'running',
-        region: awsAuth.credentials?.region || 'us-east-1',
+        region: awsAuth.credentials && 'region' in awsAuth.credentials ? awsAuth.credentials.region : 'us-east-1',
         createdAt: new Date().toISOString(),
         details: getResourceDetails(resourceType, formData)
       };
