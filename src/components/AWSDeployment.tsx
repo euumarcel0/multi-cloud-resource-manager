@@ -148,15 +148,10 @@ const AWSDeployment = () => {
           description: `${formData.resourceType} foi criado com sucesso na AWS`,
         });
 
-        // Salvar o recurso criado
-        if (result.resourceId) {
-          await saveCreatedResource(result.resourceId, formData.resourceType, formData);
-        } else {
-          // Tentar extrair o ID do log
-          const resourceId = extractResourceIdFromLogs(responseText, formData.resourceType);
-          if (resourceId) {
-            await saveCreatedResource(resourceId, formData.resourceType, formData);
-          }
+        // Extrair o ID do recurso dos logs
+        const resourceId = extractResourceIdFromLogs(responseText, formData.resourceType);
+        if (resourceId) {
+          await saveCreatedResource(resourceId, formData.resourceType, formData);
         }
 
         // Reset form
@@ -787,4 +782,204 @@ const AWSDeployment = () => {
                             <Label className="text-xs">Protocolo</Label>
                             <Select 
                               value={rule.protocol} 
-                              onValueChange={(value) => updateSecurityGroupRule(
+                              onValueChange={(value) => updateSecurityGroupRule(index, 'protocol', value)}
+                            >
+                              <SelectTrigger className="h-8">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="tcp">TCP</SelectItem>
+                                <SelectItem value="udp">UDP</SelectItem>
+                                <SelectItem value="icmp">ICMP</SelectItem>
+                                <SelectItem value="-1">All</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          
+                          <div>
+                            <Label className="text-xs">Porta Inicial</Label>
+                            <Input
+                              type="number"
+                              value={rule.fromPort}
+                              onChange={(e) => updateSecurityGroupRule(index, 'fromPort', e.target.value)}
+                              className="h-8"
+                            />
+                          </div>
+                          
+                          <div>
+                            <Label className="text-xs">Porta Final</Label>
+                            <Input
+                              type="number"
+                              value={rule.toPort}
+                              onChange={(e) => updateSecurityGroupRule(index, 'toPort', e.target.value)}
+                              className="h-8"
+                            />
+                          </div>
+                        </div>
+                        
+                        <div>
+                          <Label className="text-xs">CIDR Blocks</Label>
+                          <Input
+                            value={rule.cidrBlocks}
+                            onChange={(e) => updateSecurityGroupRule(index, 'cidrBlocks', e.target.value)}
+                            placeholder="Ex: 0.0.0.0/0"
+                            className="h-8"
+                          />
+                        </div>
+                        
+                        <div>
+                          <Label className="text-xs">Descrição</Label>
+                          <Input
+                            value={rule.description}
+                            onChange={(e) => updateSecurityGroupRule(index, 'description', e.target.value)}
+                            placeholder="Opcional"
+                            className="h-8"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </ScrollArea>
+            </div>
+          </div>
+        );
+
+      case 'load-balancer':
+        return (
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="loadBalancerName">Nome do Load Balancer</Label>
+              <Input
+                id="loadBalancerName"
+                value={formData.loadBalancerName}
+                onChange={(e) => setFormData(prev => ({ ...prev, loadBalancerName: e.target.value }))}
+                placeholder="Ex: web-app-lb"
+              />
+            </div>
+            <div>
+              <Label htmlFor="loadBalancerType">Tipo</Label>
+              <Select value={formData.loadBalancerType} onValueChange={(value) => setFormData(prev => ({ ...prev, loadBalancerType: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="application">Application Load Balancer</SelectItem>
+                  <SelectItem value="network">Network Load Balancer</SelectItem>
+                  <SelectItem value="gateway">Gateway Load Balancer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card className="border-0 shadow-lg">
+        <CardHeader className="bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-t-lg">
+          <CardTitle className="flex items-center space-x-2">
+            <Cloud className="h-6 w-6" />
+            <span>AWS Deployment</span>
+          </CardTitle>
+          <CardDescription className="text-orange-100">
+            Deploy recursos na Amazon Web Services
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-6">
+          <div className="space-y-6">
+            <div>
+              <Label htmlFor="resourceType">Tipo de Recurso</Label>
+              <Select value={formData.resourceType} onValueChange={(value) => setFormData(prev => ({ ...prev, resourceType: value }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione o tipo de recurso para criar" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="vpc">
+                    <div className="flex items-center space-x-2">
+                      <Shield className="h-4 w-4" />
+                      <span>VPC (Virtual Private Cloud)</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="internet-gateway">
+                    <div className="flex items-center space-x-2">
+                      <Cloud className="h-4 w-4" />
+                      <span>Internet Gateway</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="public-subnet">
+                    <div className="flex items-center space-x-2">
+                      <Server className="h-4 w-4" />
+                      <span>Public Subnet</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="private-subnet">
+                    <div className="flex items-center space-x-2">
+                      <Database className="h-4 w-4" />
+                      <span>Private Subnet</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="key-pair">
+                    <div className="flex items-center space-x-2">
+                      <Key className="h-4 w-4" />
+                      <span>Key Pair</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="ec2">
+                    <div className="flex items-center space-x-2">
+                      <Server className="h-4 w-4" />
+                      <span>EC2 Instance</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="security-group">
+                    <div className="flex items-center space-x-2">
+                      <Shield className="h-4 w-4" />
+                      <span>Security Group</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="load-balancer">
+                    <div className="flex items-center space-x-2">
+                      <Database className="h-4 w-4" />
+                      <span>Load Balancer</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {formData.resourceType && (
+              <>
+                <Separator />
+                {renderResourceForm()}
+              </>
+            )}
+
+            <Button 
+              onClick={deployToAWS}
+              disabled={isDeploying || !formData.resourceType}
+              className="w-full bg-orange-600 hover:bg-orange-700"
+            >
+              {isDeploying ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Fazendo Deploy...
+                </>
+              ) : (
+                <>
+                  <Cloud className="h-4 w-4 mr-2" />
+                  Deploy na AWS
+                </>
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+export default AWSDeployment;
