@@ -39,10 +39,10 @@ const Index = () => {
               {activeTab === "aws" && <AWSDeployment />}
               {activeTab === "azure" && <AzureDeployment />}
               {activeTab === "logs" && <DeploymentLogs />}
+              {activeTab === "monitoring" && <Monitoring />}
               {activeTab === "aws-login" && <AWSLogin onLoginSuccess={handleLoginSuccess} />}
               {activeTab === "azure-login" && <AzureLogin onLoginSuccess={handleLoginSuccess} />}
               {activeTab === "resources" && <UserResourcesPanel />}
-              {activeTab === "monitoring" && <Monitoring />}
             </div>
           </div>
         </div>

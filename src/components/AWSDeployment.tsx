@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,17 +7,37 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Info } from "lucide-react";
+import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Info, Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { ServerManager } from "@/utils/serverManager";
 
 interface SelectedResources {
   vpc: boolean;
-  subnet: boolean;
+  publicSubnet: boolean;
+  privateSubnet: boolean;
   securityGroup: boolean;
   ec2: boolean;
   internetGateway: boolean;
+  loadBalancer: boolean;
+}
+
+interface SecurityGroupRule {
+  type: 'ingress' | 'egress';
+  protocol: string;
+  fromPort: string;
+  toPort: string;
+  source: string;
+  description: string;
+}
+
+interface CreatedResource {
+  id: string;
+  type: string;
+  name: string;
+  deploymentId: string;
+  createdAt: string;
+  status: string;
 }
 
 const AWSDeployment = () => {
@@ -26,13 +46,17 @@ const AWSDeployment = () => {
   const [isDeploying, setIsDeploying] = useState(false);
   const [showTerraform, setShowTerraform] = useState(false);
   const [deploymentLogs, setDeploymentLogs] = useState<string>("");
+  const [createdResources, setCreatedResources] = useState<CreatedResource[]>([]);
+  const [securityGroupRules, setSecurityGroupRules] = useState<SecurityGroupRule[]>([]);
   
   const [selectedResources, setSelectedResources] = useState<SelectedResources>({
     vpc: false,
-    subnet: false,
+    publicSubnet: false,
+    privateSubnet: false,
     securityGroup: false,
     ec2: false,
-    internetGateway: false
+    internetGateway: false,
+    loadBalancer: false
   });
 
   const [config, setConfig] = useState({
@@ -40,29 +64,120 @@ const AWSDeployment = () => {
     vpcName: "main-vpc",
     vpcCidr: "10.0.0.0/16",
     
-    // Subnet Config
-    subnetName: "main-subnet",
-    subnetCidr: "10.0.1.0/24",
+    // Public Subnet Config
+    publicSubnetName: "public-subnet",
+    publicSubnetCidr: "10.0.1.0/24",
     
-    // EC2 Config - Updated for Windows
-    instanceType: "t3.medium", // Changed from t2.micro for Windows
-    instanceName: "windows-server",
-    ssmEnabled: true, // SSM instead of SSH keys
+    // Private Subnet Config
+    privateSubnetName: "private-subnet", 
+    privateSubnetCidr: "10.0.2.0/24",
+    
+    // Load Balancer Config
+    loadBalancerName: "main-lb",
+    loadBalancerType: "application",
+    
+    // EC2 Config
+    instanceType: "t3.medium",
+    instanceName: "main-instance",
+    osType: "windows", // windows or linux
     
     // Security Group Config
-    sgName: "windows-sg",
+    sgName: "main-sg",
     
     // Existing Resources
     existingVpcId: "",
-    existingSubnetId: "",
+    existingPublicSubnetId: "",
+    existingPrivateSubnetId: "",
     existingSecurityGroupId: ""
   });
+
+  // Load created resources on component mount
+  useEffect(() => {
+    loadCreatedResources();
+  }, [awsAuth.isAuthenticated]);
+
+  const loadCreatedResources = async () => {
+    if (!awsAuth.isAuthenticated || !isServerRunning) return;
+    
+    try {
+      const backendUrl = ServerManager.getBackendUrl();
+      const userId = awsAuth.credentials && 'accessKey' in awsAuth.credentials ? awsAuth.credentials.accessKey : '';
+      
+      const response = await fetch(`${backendUrl}/api/aws/resources`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setCreatedResources(data.resources || []);
+      }
+    } catch (error) {
+      console.error('Error loading created resources:', error);
+    }
+  };
 
   const handleResourceChange = (resource: keyof SelectedResources, checked: boolean) => {
     setSelectedResources(prev => ({ ...prev, [resource]: checked }));
   };
 
-  // Helper function to clean ANSI codes from logs
+  const addSecurityGroupRule = () => {
+    setSecurityGroupRules(prev => [...prev, {
+      type: 'ingress',
+      protocol: 'tcp',
+      fromPort: '',
+      toPort: '',
+      source: '0.0.0.0/0',
+      description: ''
+    }]);
+  };
+
+  const updateSecurityGroupRule = (index: number, field: keyof SecurityGroupRule, value: string) => {
+    setSecurityGroupRules(prev => prev.map((rule, i) => 
+      i === index ? { ...rule, [field]: value } : rule
+    ));
+  };
+
+  const removeSecurityGroupRule = (index: number) => {
+    setSecurityGroupRules(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const deleteCreatedResource = async (resourceId: string) => {
+    if (!confirm('Tem certeza que deseja excluir este recurso? Esta ação não pode ser desfeita.')) {
+      return;
+    }
+
+    try {
+      const backendUrl = ServerManager.getBackendUrl();
+      const userId = awsAuth.credentials && 'accessKey' in awsAuth.credentials ? awsAuth.credentials.accessKey : '';
+      
+      const response = await fetch(`${backendUrl}/api/aws/resource/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, resourceId }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: "Recurso excluído",
+          description: "O recurso foi excluído com sucesso.",
+        });
+        loadCreatedResources(); // Reload resources
+      } else {
+        throw new Error('Falha ao excluir recurso');
+      }
+    } catch (error) {
+      console.error('Error deleting resource:', error);
+      toast({
+        title: "Erro ao excluir recurso",
+        description: "Não foi possível excluir o recurso.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  // Clean ANSI codes from logs
   const cleanAnsiCodes = (text: string) => {
     return text.replace(/\x1b\[[0-9;]*[mGK]/g, '');
   };
@@ -99,8 +214,6 @@ const AWSDeployment = () => {
     setIsDeploying(true);
     setDeploymentLogs("🚀 Iniciando deployment AWS...\n");
     
-    console.log("Iniciando deployment AWS...");
-
     try {
         const backendUrl = ServerManager.getBackendUrl();
         const userId = awsAuth.credentials.accessKey;
@@ -128,9 +241,10 @@ const AWSDeployment = () => {
 
         const deploymentPayload = { 
             resources: selectedResources, 
-            config: config, 
+            config: config,
+            securityGroupRules: securityGroupRules,
             auth: { userId: userId },
-            storeConfig: true // Flag to store Terraform config instead of deleting
+            storeConfig: true
         };
 
         console.log('Payload de deployment:', deploymentPayload);
@@ -187,6 +301,8 @@ const AWSDeployment = () => {
                             title: "Deployment Completo",
                             description: "Recursos criados com sucesso! Terraform configuração salva.",
                         });
+                        // Reload created resources after successful deployment
+                        loadCreatedResources();
                     }
                 } catch (parseError) {
                     const cleanedLine = cleanAnsiCodes(line);
@@ -239,7 +355,6 @@ provider "aws" {
 
 `;
 
-    // Only generate code for selected resources
     if (selectedResources.vpc) {
         code += `
 resource "aws_vpc" "main" {
@@ -262,79 +377,98 @@ resource "aws_internet_gateway" "main" {
 `;
     }
 
-    if (selectedResources.subnet) {
+    if (selectedResources.publicSubnet) {
         code += `
 resource "aws_subnet" "public" {
   vpc_id     = ${selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
-  cidr_block = "${config.subnetCidr}"
+  cidr_block = "${config.publicSubnetCidr}"
+  map_public_ip_on_launch = true
   tags = {
-    Name = "${config.subnetName}"
+    Name = "${config.publicSubnetName}"
   }
 }
 `;
     }
 
-    if (selectedResources.securityGroup) {
+    if (selectedResources.privateSubnet) {
         code += `
-resource "aws_security_group" "windows" {
+resource "aws_subnet" "private" {
+  vpc_id     = ${selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
+  cidr_block = "${config.privateSubnetCidr}"
+  tags = {
+    Name = "${config.privateSubnetName}"
+  }
+}
+`;
+    }
+
+    if (selectedResources.securityGroup && securityGroupRules.length > 0) {
+        code += `
+resource "aws_security_group" "main" {
   name        = "${config.sgName}"
-  description = "Security group for Windows servers with RDP and SSM"
+  description = "Custom security group"
   vpc_id      = ${selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
 
-  ingress {
-    from_port   = 3389
-    to_port     = 3389
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "RDP access"
+`;
+        securityGroupRules.forEach((rule, index) => {
+            code += `  ${rule.type} {
+    from_port   = ${rule.fromPort}
+    to_port     = ${rule.toPort}
+    protocol    = "${rule.protocol}"
+    cidr_blocks = ["${rule.source}"]
+    description = "${rule.description}"
   }
 
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTP access"
-  }
+`;
+        });
 
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTPS access"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
+        code += `  tags = {
     Name = "${config.sgName}"
   }
 }
 `;
     }
 
+    if (selectedResources.loadBalancer) {
+        code += `
+resource "aws_lb" "main" {
+  name               = "${config.loadBalancerName}"
+  internal           = false
+  load_balancer_type = "${config.loadBalancerType}"
+  security_groups    = ${selectedResources.securityGroup ? '[aws_security_group.main.id]' : '[]'}
+  subnets            = ${selectedResources.publicSubnet ? '[aws_subnet.public.id]' : '[]'}
+
+  tags = {
+    Name = "${config.loadBalancerName}"
+  }
+}
+`;
+    }
+
     if (selectedResources.ec2) {
+        const amiMap = {
+            windows: 'ami-0c02fb55956c7d316', // Windows Server 2022
+            linux: 'ami-0abcdef1234567890'     // Amazon Linux 2
+        };
+
         let subnetRef = '';
-        if (selectedResources.subnet) {
+        if (selectedResources.publicSubnet) {
             subnetRef = 'subnet_id     = aws_subnet.public.id';
-        } else if (config.existingSubnetId) {
-            subnetRef = `subnet_id     = "${config.existingSubnetId}"`;
+        } else if (selectedResources.privateSubnet) {
+            subnetRef = 'subnet_id     = aws_subnet.private.id';
+        } else if (config.existingPublicSubnetId) {
+            subnetRef = `subnet_id     = "${config.existingPublicSubnetId}"`;
         }
 
         let securityGroupRef = '';
         if (selectedResources.securityGroup) {
-            securityGroupRef = 'vpc_security_group_ids = [aws_security_group.windows.id]';
+            securityGroupRef = 'vpc_security_group_ids = [aws_security_group.main.id]';
         } else if (config.existingSecurityGroupId) {
             securityGroupRef = `vpc_security_group_ids = ["${config.existingSecurityGroupId}"]`;
         }
 
-        code += `
+        if (config.osType === 'windows') {
+            code += `
 # IAM role for SSM
 resource "aws_iam_role" "ssm_role" {
   name = "EC2-SSM-Role"
@@ -363,8 +497,8 @@ resource "aws_iam_instance_profile" "ssm_profile" {
   role = aws_iam_role.ssm_role.name
 }
 
-resource "aws_instance" "windows" {
-  ami           = "ami-0c02fb55956c7d316" # Windows Server 2022
+resource "aws_instance" "main" {
+  ami           = "${amiMap[config.osType as keyof typeof amiMap]}"
   instance_type = "${config.instanceType}"
   ${subnetRef}
   ${securityGroupRef}
@@ -372,8 +506,6 @@ resource "aws_instance" "windows" {
 
   user_data = <<-EOF
               <powershell>
-              # Install SSM Agent (usually pre-installed on Windows AMIs)
-              # Configure Windows for remote management
               Enable-PSRemoting -Force
               Set-Item WSMan:\\localhost\\Client\\TrustedHosts -Value "*" -Force
               </powershell>
@@ -386,6 +518,29 @@ resource "aws_instance" "windows" {
   }
 }
 `;
+        } else {
+            code += `
+resource "aws_instance" "main" {
+  ami           = "${amiMap[config.osType as keyof typeof amiMap]}"
+  instance_type = "${config.instanceType}"
+  ${subnetRef}
+  ${securityGroupRef}
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y amazon-ssm-agent
+              systemctl enable amazon-ssm-agent
+              systemctl start amazon-ssm-agent
+              EOF
+
+  tags = {
+    Name = "${config.instanceName}"
+    OS = "Linux"
+  }
+}
+`;
+        }
     }
 
     return code;
@@ -427,9 +582,11 @@ resource "aws_instance" "windows" {
   const resourcesList = [
     { key: 'vpc' as keyof SelectedResources, name: 'VPC', description: 'Virtual Private Cloud' },
     { key: 'internetGateway' as keyof SelectedResources, name: 'Internet Gateway', description: 'Conecta VPC à internet' },
-    { key: 'subnet' as keyof SelectedResources, name: 'Subnet', description: 'Sub-rede pública' },
-    { key: 'securityGroup' as keyof SelectedResources, name: 'Security Group', description: 'Firewall para Windows (RDP + HTTP/HTTPS)' },
-    { key: 'ec2' as keyof SelectedResources, name: 'Windows EC2', description: 'Instância Windows Server com SSM' }
+    { key: 'publicSubnet' as keyof SelectedResources, name: 'Subnet Pública', description: 'Sub-rede com acesso à internet' },
+    { key: 'privateSubnet' as keyof SelectedResources, name: 'Subnet Privada', description: 'Sub-rede sem acesso direto à internet' },
+    { key: 'securityGroup' as keyof SelectedResources, name: 'Security Group', description: 'Firewall configurável' },
+    { key: 'loadBalancer' as keyof SelectedResources, name: 'Load Balancer', description: 'Distribuidor de carga' },
+    { key: 'ec2' as keyof SelectedResources, name: 'Instância EC2', description: 'Servidor virtual (Linux ou Windows)' }
   ];
 
   return (
@@ -454,21 +611,21 @@ resource "aws_instance" "windows" {
         </div>
       </div>
 
-      {/* Windows Alert */}
-      <Card className="border-orange-200 bg-orange-50">
+      {/* OS Type Alert */}
+      <Card className="border-blue-200 bg-blue-50">
         <CardContent className="flex items-start space-x-3 p-4">
-          <Info className="h-5 w-5 text-orange-600 mt-0.5" />
+          <Info className="h-5 w-5 text-blue-600 mt-0.5" />
           <div>
-            <h4 className="font-medium text-orange-900">Instâncias Windows com SSM</h4>
-            <p className="text-sm text-orange-700 mt-1">
-              As instâncias EC2 serão criadas com Windows Server e habilitadas para SSM (Systems Manager) para gerenciamento remoto seguro. 
-              Não é necessário configurar chaves SSH. Use o Session Manager da AWS para acesso via console.
+            <h4 className="font-medium text-blue-900">Instâncias EC2 - Linux e Windows</h4>
+            <p className="text-sm text-blue-700 mt-1">
+              Escolha entre instâncias Linux ou Windows. Instâncias Windows vêm com SSM habilitado automaticamente para gerenciamento remoto seguro.
+              Não são necessárias chaves SSH para Windows.
             </p>
           </div>
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         {/* Resource Selection */}
         <Card className="border-0 shadow-lg">
           <CardHeader>
@@ -504,7 +661,7 @@ resource "aws_instance" "windows" {
               Configure os parâmetros dos recursos selecionados
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-4 max-h-96 overflow-y-auto">
             {selectedResources.vpc && (
               <div className="space-y-3 p-3 bg-blue-50 rounded-lg">
                 <h4 className="font-medium text-blue-900">Configuração VPC</h4>
@@ -527,31 +684,115 @@ resource "aws_instance" "windows" {
               </div>
             )}
 
-            {selectedResources.subnet && (
+            {selectedResources.publicSubnet && (
               <div className="space-y-3 p-3 bg-green-50 rounded-lg">
-                <h4 className="font-medium text-green-900">Configuração Subnet</h4>
+                <h4 className="font-medium text-green-900">Subnet Pública</h4>
                 <div>
-                  <Label htmlFor="subnetName">Nome da Subnet</Label>
+                  <Label htmlFor="publicSubnetName">Nome da Subnet</Label>
                   <Input
-                    id="subnetName"
-                    value={config.subnetName}
-                    onChange={(e) => setConfig({ ...config, subnetName: e.target.value })}
+                    id="publicSubnetName"
+                    value={config.publicSubnetName}
+                    onChange={(e) => setConfig({ ...config, publicSubnetName: e.target.value })}
                   />
                 </div>
                 <div>
-                  <Label htmlFor="subnetCidr">CIDR Block</Label>
+                  <Label htmlFor="publicSubnetCidr">CIDR Block</Label>
                   <Input
-                    id="subnetCidr"
-                    value={config.subnetCidr}
-                    onChange={(e) => setConfig({ ...config, subnetCidr: e.target.value })}
+                    id="publicSubnetCidr"
+                    value={config.publicSubnetCidr}
+                    onChange={(e) => setConfig({ ...config, publicSubnetCidr: e.target.value })}
                   />
+                </div>
+                {!selectedResources.vpc && (
+                  <div>
+                    <Label htmlFor="existingVpcId">ID da VPC Existente</Label>
+                    <Input
+                      id="existingVpcId"
+                      value={config.existingVpcId}
+                      onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
+                      placeholder="vpc-xxxxxxxxx"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedResources.privateSubnet && (
+              <div className="space-y-3 p-3 bg-yellow-50 rounded-lg">
+                <h4 className="font-medium text-yellow-900">Subnet Privada</h4>
+                <div>
+                  <Label htmlFor="privateSubnetName">Nome da Subnet</Label>
+                  <Input
+                    id="privateSubnetName"
+                    value={config.privateSubnetName}
+                    onChange={(e) => setConfig({ ...config, privateSubnetName: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="privateSubnetCidr">CIDR Block</Label>
+                  <Input
+                    id="privateSubnetCidr"
+                    value={config.privateSubnetCidr}
+                    onChange={(e) => setConfig({ ...config, privateSubnetCidr: e.target.value })}
+                  />
+                </div>
+                {!selectedResources.vpc && (
+                  <div>
+                    <Label htmlFor="existingVpcIdPrivate">ID da VPC Existente</Label>
+                    <Input
+                      id="existingVpcIdPrivate"
+                      value={config.existingVpcId}
+                      onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
+                      placeholder="vpc-xxxxxxxxx"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedResources.loadBalancer && (
+              <div className="space-y-3 p-3 bg-indigo-50 rounded-lg">
+                <h4 className="font-medium text-indigo-900">Load Balancer</h4>
+                <div>
+                  <Label htmlFor="loadBalancerName">Nome do Load Balancer</Label>
+                  <Input
+                    id="loadBalancerName"
+                    value={config.loadBalancerName}
+                    onChange={(e) => setConfig({ ...config, loadBalancerName: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="loadBalancerType">Tipo</Label>
+                  <Select 
+                    value={config.loadBalancerType}
+                    onValueChange={(value) => setConfig({ ...config, loadBalancerType: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="application">Application Load Balancer</SelectItem>
+                      <SelectItem value="network">Network Load Balancer</SelectItem>
+                      <SelectItem value="gateway">Gateway Load Balancer</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             )}
 
             {selectedResources.securityGroup && (
               <div className="space-y-3 p-3 bg-purple-50 rounded-lg">
-                <h4 className="font-medium text-purple-900">Security Group</h4>
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium text-purple-900">Security Group</h4>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={addSecurityGroupRule}
+                  >
+                    <Plus className="h-4 w-4 mr-1" />
+                    Adicionar Regra
+                  </Button>
+                </div>
                 <div>
                   <Label htmlFor="sgName">Nome do Security Group</Label>
                   <Input
@@ -560,15 +801,66 @@ resource "aws_instance" "windows" {
                     onChange={(e) => setConfig({ ...config, sgName: e.target.value })}
                   />
                 </div>
-                <p className="text-xs text-purple-700">
-                  Configurado automaticamente para Windows: RDP (3389), HTTP (80), HTTPS (443)
-                </p>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {securityGroupRules.map((rule, index) => (
+                    <div key={index} className="p-2 border rounded bg-white space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Select 
+                          value={rule.type}
+                          onValueChange={(value) => updateSecurityGroupRule(index, 'type', value)}
+                        >
+                          <SelectTrigger className="w-24">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ingress">Entrada</SelectItem>
+                            <SelectItem value="egress">Saída</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeSecurityGroupRule(index)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input
+                          placeholder="Protocolo (tcp/udp)"
+                          value={rule.protocol}
+                          onChange={(e) => updateSecurityGroupRule(index, 'protocol', e.target.value)}
+                        />
+                        <Input
+                          placeholder="Porta inicial"
+                          value={rule.fromPort}
+                          onChange={(e) => updateSecurityGroupRule(index, 'fromPort', e.target.value)}
+                        />
+                        <Input
+                          placeholder="Porta final"
+                          value={rule.toPort}
+                          onChange={(e) => updateSecurityGroupRule(index, 'toPort', e.target.value)}
+                        />
+                        <Input
+                          placeholder="Origem (CIDR)"
+                          value={rule.source}
+                          onChange={(e) => updateSecurityGroupRule(index, 'source', e.target.value)}
+                        />
+                      </div>
+                      <Input
+                        placeholder="Descrição"
+                        value={rule.description}
+                        onChange={(e) => updateSecurityGroupRule(index, 'description', e.target.value)}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
             {selectedResources.ec2 && (
               <div className="space-y-3 p-3 bg-orange-50 rounded-lg">
-                <h4 className="font-medium text-orange-900">Configuração Windows EC2</h4>
+                <h4 className="font-medium text-orange-900">Configuração EC2</h4>
                 <div>
                   <Label htmlFor="instanceName">Nome da Instância</Label>
                   <Input
@@ -576,6 +868,21 @@ resource "aws_instance" "windows" {
                     value={config.instanceName}
                     onChange={(e) => setConfig({ ...config, instanceName: e.target.value })}
                   />
+                </div>
+                <div>
+                  <Label htmlFor="osType">Sistema Operacional</Label>
+                  <Select 
+                    value={config.osType}
+                    onValueChange={(value) => setConfig({ ...config, osType: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="linux">Linux (Amazon Linux 2)</SelectItem>
+                      <SelectItem value="windows">Windows Server 2022</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
                   <Label htmlFor="instanceType">Tipo da Instância</Label>
@@ -587,47 +894,106 @@ resource "aws_instance" "windows" {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="t3.medium">t3.medium (Recomendado para Windows)</SelectItem>
+                      <SelectItem value="t3.micro">t3.micro</SelectItem>
+                      <SelectItem value="t3.small">t3.small</SelectItem>
+                      <SelectItem value="t3.medium">t3.medium (Recomendado)</SelectItem>
                       <SelectItem value="t3.large">t3.large</SelectItem>
-                      <SelectItem value="t3.xlarge">t3.xlarge</SelectItem>
                       <SelectItem value="m5.large">m5.large</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <p className="text-xs text-orange-700">
-                  ✅ SSM habilitado automaticamente - Não requer chaves SSH
-                </p>
+                {config.osType === 'windows' && (
+                  <p className="text-xs text-orange-700">
+                    ✅ SSM habilitado automaticamente - Acesso via Session Manager
+                  </p>
+                )}
               </div>
             )}
-
-            <div className="flex space-x-2 pt-4">
-              <Button 
-                onClick={handleDeploy} 
-                disabled={isDeploying}
-                className="bg-orange-600 hover:bg-orange-700"
-              >
-                {isDeploying ? (
-                  <>
-                    <RotateCcw className="h-4 w-4 mr-2 animate-spin" />
-                    Executando terraform apply...
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-4 w-4 mr-2" />
-                    Deploy Infrastructure
-                  </>
-                )}
-              </Button>
-              <Button 
-                variant="outline" 
-                onClick={() => setShowTerraform(!showTerraform)}
-              >
-                {showTerraform ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
-                {showTerraform ? 'Ocultar' : 'Ver'} Terraform
-              </Button>
-            </div>
           </CardContent>
         </Card>
+
+        {/* Created Resources */}
+        <Card className="border-0 shadow-lg">
+          <CardHeader>
+            <CardTitle>Recursos Criados</CardTitle>
+            <CardDescription>
+              Recursos AWS criados pelos seus deployments
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {createdResources.length === 0 ? (
+              <div className="text-center py-8">
+                <Server className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-gray-500">Nenhum recurso criado ainda</p>
+                <p className="text-sm text-gray-400 mt-1">
+                  Execute um deployment para ver os recursos aqui
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-80 overflow-y-auto">
+                {createdResources.map((resource) => (
+                  <div
+                    key={resource.id}
+                    className="flex items-center justify-between p-3 border rounded-lg bg-gray-50"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{resource.name}</p>
+                      <p className="text-xs text-gray-500">{resource.type}</p>
+                      <p className="text-xs text-gray-400 font-mono">{resource.id}</p>
+                      <p className="text-xs text-gray-400">
+                        {new Date(resource.createdAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <Badge 
+                        variant="secondary" 
+                        className={resource.status === 'running' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}
+                      >
+                        {resource.status}
+                      </Badge>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => deleteCreatedResource(resource.id)}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Action Buttons */}
+      <div className="flex space-x-2">
+        <Button 
+          onClick={handleDeploy} 
+          disabled={isDeploying}
+          className="bg-orange-600 hover:bg-orange-700"
+        >
+          {isDeploying ? (
+            <>
+              <RotateCcw className="h-4 w-4 mr-2 animate-spin" />
+              Executando terraform apply...
+            </>
+          ) : (
+            <>
+              <Play className="h-4 w-4 mr-2" />
+              Deploy Infrastructure
+            </>
+          )}
+        </Button>
+        <Button 
+          variant="outline" 
+          onClick={() => setShowTerraform(!showTerraform)}
+        >
+          {showTerraform ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
+          {showTerraform ? 'Ocultar' : 'Ver'} Terraform
+        </Button>
       </div>
 
       {/* Terraform Code Preview */}
