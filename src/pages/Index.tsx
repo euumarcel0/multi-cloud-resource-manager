@@ -9,6 +9,7 @@ import DeploymentLogs from "@/components/DeploymentLogs";
 import AWSLogin from "@/components/AWSLogin";
 import AzureLogin from "@/components/AzureLogin";
 import UserResourcesPanel from "@/components/UserResourcesPanel";
+import Monitoring from "@/components/Monitoring";
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -41,6 +42,7 @@ const Index = () => {
               {activeTab === "aws-login" && <AWSLogin onLoginSuccess={handleLoginSuccess} />}
               {activeTab === "azure-login" && <AzureLogin onLoginSuccess={handleLoginSuccess} />}
               {activeTab === "resources" && <UserResourcesPanel />}
+              {activeTab === "monitoring" && <Monitoring />}
             </div>
           </div>
         </div>
