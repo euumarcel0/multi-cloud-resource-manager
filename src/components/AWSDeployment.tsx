@@ -621,37 +621,72 @@ resource "aws_instance" "main" {
         <CardContent className="p-4">
           <div className="flex items-start space-x-3">
             <Info className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div>
-                <h4 className="font-medium text-blue-900">🔐 Acessando EC2 via SSM (Linux e Windows)</h4>
-                <p className="text-sm text-blue-700 mt-1">
-                  Instâncias Windows vêm com SSM habilitado automaticamente. Não são necessárias chaves SSH.
-                </p>
+                <h4 className="font-medium text-blue-900 mb-2">🔐 Acessando EC2 via SSM — Passo a Passo (Linux e Windows)</h4>
               </div>
               
-              <div className="text-sm text-blue-700 space-y-2">
+              <div className="text-sm text-blue-700 space-y-3">
                 <div>
-                  <strong>Pré-requisitos:</strong>
+                  <strong>☁️ Pré-requisitos (válido para ambos):</strong>
                   <ul className="list-disc list-inside ml-2 mt-1 space-y-1">
-                    <li>AWS CLI instalada</li>
-                    <li>Session Manager Plugin instalado</li>
-                    <li>Permissões SSM no seu usuário IAM</li>
+                    <li>AWS CLI instalada → <a href="https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html" className="underline" target="_blank" rel="noopener noreferrer">https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html</a></li>
+                    <li>Session Manager Plugin instalado → <a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html" className="underline" target="_blank" rel="noopener noreferrer">Link oficial</a></li>
+                    <li>Autenticação configurada: <code className="bg-blue-100 px-1 rounded">aws configure</code></li>
                   </ul>
                 </div>
                 
                 <div>
-                  <strong>Conectar via SSM:</strong>
-                  <code className="block bg-blue-100 p-2 rounded mt-1 text-xs">
-                    aws ssm start-session --target &lt;INSTANCE_ID&gt;
-                  </code>
+                  <strong>Seu usuário IAM precisa de permissões SSM:</strong>
+                  <pre className="bg-blue-100 p-2 rounded mt-1 text-xs overflow-x-auto">
+{`{
+  "Effect": "Allow",
+  "Action": [
+    "ssm:StartSession",
+    "ssm:DescribeInstanceInformation",
+    "ssm:DescribeSessions",
+    "ssm:TerminateSession"
+  ],
+  "Resource": "*"
+}`}
+                  </pre>
                 </div>
                 
                 <div>
-                  <strong>Windows RDP via túnel (opcional):</strong>
+                  <strong>🐧 Conectar em EC2 Linux via SSM:</strong>
                   <code className="block bg-blue-100 p-2 rounded mt-1 text-xs">
-                    aws ssm start-session --target &lt;INSTANCE_ID&gt; --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["3389"],"localPortNumber":["13389"]}'
+                    aws ssm start-session --target &lt;INSTANCE_ID&gt;
                   </code>
-                  <p className="text-xs mt-1">Então conecte via Remote Desktop em: localhost:13389</p>
+                  <p className="text-xs mt-1">Exemplo: <code>aws ssm start-session --target i-0123456789abcdef0</code></p>
+                </div>
+                
+                <div>
+                  <strong>🪟 Conectar em EC2 Windows via SSM (terminal):</strong>
+                  <code className="block bg-blue-100 p-2 rounded mt-1 text-xs">
+                    aws ssm start-session --target &lt;INSTANCE_ID&gt;
+                  </code>
+                  <p className="text-xs mt-1">Resultado esperado: <code>C:\Users\Administrator&gt;</code></p>
+                </div>
+                
+                <div>
+                  <strong>🖥️ (Opcional) Acessar Windows com RDP via túnel SSM:</strong>
+                  <pre className="bg-blue-100 p-2 rounded mt-1 text-xs overflow-x-auto">
+{`aws ssm start-session \\
+  --target <INSTANCE_ID> \\
+  --document-name AWS-StartPortForwardingSession \\
+  --parameters '{"portNumber":["3389"],"localPortNumber":["13389"]}'`}
+                  </pre>
+                  <p className="text-xs mt-1">Em seguida, abra o Remote Desktop (mstsc) e conecte em: <code>localhost:13389</code></p>
+                  <p className="text-xs mt-1">🔐 Você acessa via túnel seguro, sem IP público nem abrir portas na instância.</p>
+                </div>
+                
+                <div>
+                  <strong>✅ Observações Finais:</strong>
+                  <ul className="list-disc list-inside ml-2 mt-1 space-y-1">
+                    <li>A EC2 deve ter o SSM Agent ativo.</li>
+                    <li>A instância precisa ter uma IAM Role com a policy: <code>arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore</code></li>
+                    <li>A subnet da instância precisa de acesso à internet ou VPC endpoints para SSM.</li>
+                  </ul>
                 </div>
               </div>
             </div>
@@ -731,7 +766,7 @@ resource "aws_instance" "main" {
                 </div>
                 {!selectedResources.vpc && (
                   <div>
-                    <Label htmlFor="internetGatewayVpcId">ID da VPC para associar</Label>
+                    <Label htmlFor="internetGatewayVpcId">ID da VPC para associar *</Label>
                     <Input
                       id="internetGatewayVpcId"
                       value={config.internetGatewayVpcId}
@@ -739,7 +774,7 @@ resource "aws_instance" "main" {
                       placeholder="vpc-xxxxxxxxx"
                     />
                     <p className="text-xs text-cyan-700 mt-1">
-                      Obrigatório: ID da VPC onde o Internet Gateway será associado
+                      ⚠️ Obrigatório: ID da VPC onde o Internet Gateway será associado
                     </p>
                   </div>
                 )}
@@ -767,13 +802,16 @@ resource "aws_instance" "main" {
                 </div>
                 {!selectedResources.vpc && (
                   <div>
-                    <Label htmlFor="existingVpcId">ID da VPC Existente</Label>
+                    <Label htmlFor="existingVpcId">ID da VPC Existente *</Label>
                     <Input
                       id="existingVpcId"
                       value={config.existingVpcId}
                       onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
                       placeholder="vpc-xxxxxxxxx"
                     />
+                    <p className="text-xs text-green-700 mt-1">
+                      ⚠️ Obrigatório se não criar VPC nova
+                    </p>
                   </div>
                 )}
               </div>
@@ -800,13 +838,16 @@ resource "aws_instance" "main" {
                 </div>
                 {!selectedResources.vpc && (
                   <div>
-                    <Label htmlFor="existingVpcIdPrivate">ID da VPC Existente</Label>
+                    <Label htmlFor="existingVpcIdPrivate">ID da VPC Existente *</Label>
                     <Input
                       id="existingVpcIdPrivate"
                       value={config.existingVpcId}
                       onChange={(e) => setConfig({ ...config, existingVpcId: e.target.value })}
                       placeholder="vpc-xxxxxxxxx"
                     />
+                    <p className="text-xs text-yellow-700 mt-1">
+                      ⚠️ Obrigatório se não criar VPC nova
+                    </p>
                   </div>
                 )}
               </div>
