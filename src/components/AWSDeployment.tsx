@@ -64,6 +64,10 @@ const AWSDeployment = () => {
     vpcName: "main-vpc",
     vpcCidr: "10.0.0.0/16",
     
+    // Internet Gateway Config
+    internetGatewayName: "main-igw",
+    internetGatewayVpcId: "",
+    
     // Public Subnet Config
     publicSubnetName: "public-subnet",
     publicSubnetCidr: "10.0.1.0/24",
@@ -367,11 +371,12 @@ resource "aws_vpc" "main" {
     }
 
     if (selectedResources.internetGateway) {
+        const vpcReference = selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.internetGatewayVpcId || config.existingVpcId}"`;
         code += `
 resource "aws_internet_gateway" "main" {
-  vpc_id = ${selectedResources.vpc ? 'aws_vpc.main.id' : `"${config.existingVpcId}"`}
+  vpc_id = ${vpcReference}
   tags = {
-    Name = "main-igw"
+    Name = "${config.internetGatewayName}"
   }
 }
 `;
@@ -611,16 +616,45 @@ resource "aws_instance" "main" {
         </div>
       </div>
 
-      {/* OS Type Alert */}
+      {/* SSM Access Information */}
       <Card className="border-blue-200 bg-blue-50">
-        <CardContent className="flex items-start space-x-3 p-4">
-          <Info className="h-5 w-5 text-blue-600 mt-0.5" />
-          <div>
-            <h4 className="font-medium text-blue-900">Instâncias EC2 - Linux e Windows</h4>
-            <p className="text-sm text-blue-700 mt-1">
-              Escolha entre instâncias Linux ou Windows. Instâncias Windows vêm com SSM habilitado automaticamente para gerenciamento remoto seguro.
-              Não são necessárias chaves SSH para Windows.
-            </p>
+        <CardContent className="p-4">
+          <div className="flex items-start space-x-3">
+            <Info className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+            <div className="space-y-3">
+              <div>
+                <h4 className="font-medium text-blue-900">🔐 Acessando EC2 via SSM (Linux e Windows)</h4>
+                <p className="text-sm text-blue-700 mt-1">
+                  Instâncias Windows vêm com SSM habilitado automaticamente. Não são necessárias chaves SSH.
+                </p>
+              </div>
+              
+              <div className="text-sm text-blue-700 space-y-2">
+                <div>
+                  <strong>Pré-requisitos:</strong>
+                  <ul className="list-disc list-inside ml-2 mt-1 space-y-1">
+                    <li>AWS CLI instalada</li>
+                    <li>Session Manager Plugin instalado</li>
+                    <li>Permissões SSM no seu usuário IAM</li>
+                  </ul>
+                </div>
+                
+                <div>
+                  <strong>Conectar via SSM:</strong>
+                  <code className="block bg-blue-100 p-2 rounded mt-1 text-xs">
+                    aws ssm start-session --target &lt;INSTANCE_ID&gt;
+                  </code>
+                </div>
+                
+                <div>
+                  <strong>Windows RDP via túnel (opcional):</strong>
+                  <code className="block bg-blue-100 p-2 rounded mt-1 text-xs">
+                    aws ssm start-session --target &lt;INSTANCE_ID&gt; --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["3389"],"localPortNumber":["13389"]}'
+                  </code>
+                  <p className="text-xs mt-1">Então conecte via Remote Desktop em: localhost:13389</p>
+                </div>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -661,7 +695,7 @@ resource "aws_instance" "main" {
               Configure os parâmetros dos recursos selecionados
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4 max-h-96 overflow-y-auto">
+          <CardContent className="space-y-4 max-h-[600px] overflow-y-auto">
             {selectedResources.vpc && (
               <div className="space-y-3 p-3 bg-blue-50 rounded-lg">
                 <h4 className="font-medium text-blue-900">Configuração VPC</h4>
@@ -681,6 +715,34 @@ resource "aws_instance" "main" {
                     onChange={(e) => setConfig({ ...config, vpcCidr: e.target.value })}
                   />
                 </div>
+              </div>
+            )}
+
+            {selectedResources.internetGateway && (
+              <div className="space-y-3 p-3 bg-cyan-50 rounded-lg">
+                <h4 className="font-medium text-cyan-900">Internet Gateway</h4>
+                <div>
+                  <Label htmlFor="internetGatewayName">Nome do Internet Gateway</Label>
+                  <Input
+                    id="internetGatewayName"
+                    value={config.internetGatewayName}
+                    onChange={(e) => setConfig({ ...config, internetGatewayName: e.target.value })}
+                  />
+                </div>
+                {!selectedResources.vpc && (
+                  <div>
+                    <Label htmlFor="internetGatewayVpcId">ID da VPC para associar</Label>
+                    <Input
+                      id="internetGatewayVpcId"
+                      value={config.internetGatewayVpcId}
+                      onChange={(e) => setConfig({ ...config, internetGatewayVpcId: e.target.value })}
+                      placeholder="vpc-xxxxxxxxx"
+                    />
+                    <p className="text-xs text-cyan-700 mt-1">
+                      Obrigatório: ID da VPC onde o Internet Gateway será associado
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -801,59 +863,65 @@ resource "aws_instance" "main" {
                     onChange={(e) => setConfig({ ...config, sgName: e.target.value })}
                   />
                 </div>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {securityGroupRules.map((rule, index) => (
-                    <div key={index} className="p-2 border rounded bg-white space-y-2">
-                      <div className="flex items-center justify-between">
-                        <Select 
-                          value={rule.type}
-                          onValueChange={(value) => updateSecurityGroupRule(index, 'type', value)}
-                        >
-                          <SelectTrigger className="w-24">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="ingress">Entrada</SelectItem>
-                            <SelectItem value="egress">Saída</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => removeSecurityGroupRule(index)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {securityGroupRules.length === 0 ? (
+                    <p className="text-sm text-purple-600 text-center py-2">
+                      Nenhuma regra definida. Clique em "Adicionar Regra" para configurar o tráfego.
+                    </p>
+                  ) : (
+                    securityGroupRules.map((rule, index) => (
+                      <div key={index} className="p-2 border rounded bg-white space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Select 
+                            value={rule.type}
+                            onValueChange={(value) => updateSecurityGroupRule(index, 'type', value)}
+                          >
+                            <SelectTrigger className="w-24">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ingress">Entrada</SelectItem>
+                              <SelectItem value="egress">Saída</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeSecurityGroupRule(index)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Input
+                            placeholder="Protocolo (tcp/udp)"
+                            value={rule.protocol}
+                            onChange={(e) => updateSecurityGroupRule(index, 'protocol', e.target.value)}
+                          />
+                          <Input
+                            placeholder="Porta inicial"
+                            value={rule.fromPort}
+                            onChange={(e) => updateSecurityGroupRule(index, 'fromPort', e.target.value)}
+                          />
+                          <Input
+                            placeholder="Porta final"
+                            value={rule.toPort}
+                            onChange={(e) => updateSecurityGroupRule(index, 'toPort', e.target.value)}
+                          />
+                          <Input
+                            placeholder="Origem (CIDR)"
+                            value={rule.source}
+                            onChange={(e) => updateSecurityGroupRule(index, 'source', e.target.value)}
+                          />
+                        </div>
+                        <Input
+                          placeholder="Descrição"
+                          value={rule.description}
+                          onChange={(e) => updateSecurityGroupRule(index, 'description', e.target.value)}
+                        />
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Input
-                          placeholder="Protocolo (tcp/udp)"
-                          value={rule.protocol}
-                          onChange={(e) => updateSecurityGroupRule(index, 'protocol', e.target.value)}
-                        />
-                        <Input
-                          placeholder="Porta inicial"
-                          value={rule.fromPort}
-                          onChange={(e) => updateSecurityGroupRule(index, 'fromPort', e.target.value)}
-                        />
-                        <Input
-                          placeholder="Porta final"
-                          value={rule.toPort}
-                          onChange={(e) => updateSecurityGroupRule(index, 'toPort', e.target.value)}
-                        />
-                        <Input
-                          placeholder="Origem (CIDR)"
-                          value={rule.source}
-                          onChange={(e) => updateSecurityGroupRule(index, 'source', e.target.value)}
-                        />
-                      </div>
-                      <Input
-                        placeholder="Descrição"
-                        value={rule.description}
-                        onChange={(e) => updateSecurityGroupRule(index, 'description', e.target.value)}
-                      />
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
             )}
@@ -907,6 +975,11 @@ resource "aws_instance" "main" {
                     ✅ SSM habilitado automaticamente - Acesso via Session Manager
                   </p>
                 )}
+                {config.osType === 'linux' && (
+                  <p className="text-xs text-orange-700">
+                    ✅ SSM Agent será instalado automaticamente - Acesso via Session Manager
+                  </p>
+                )}
               </div>
             )}
           </CardContent>
@@ -930,7 +1003,7 @@ resource "aws_instance" "main" {
                 </p>
               </div>
             ) : (
-              <div className="space-y-3 max-h-80 overflow-y-auto">
+              <div className="space-y-3 max-h-96 overflow-y-auto">
                 {createdResources.map((resource) => (
                   <div
                     key={resource.id}
