@@ -47,40 +47,10 @@ const UserResourcesPanel = () => {
     });
   };
 
-  const checkResourceStatus = async (resourceId: string, resourceType: string) => {
-    if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) {
-      return 'unknown';
-    }
-    
-    try {
-      const backendUrl = ServerManager.getBackendUrl();
-      const userId = awsAuth.credentials.accessKey;
-      
-      const response = await fetch(`${backendUrl}/api/aws/resource-status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          resourceId,
-          resourceType,
-          region: awsAuth.credentials.region || 'us-east-1'
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        return data.status || 'unknown';
-      }
-    } catch (error) {
-      console.error('Erro ao verificar status do recurso:', error);
-    }
-    
-    return 'unknown';
-  };
-
   const loadResources = async () => {
     if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) {
       console.log('UserResourcesPanel: Usuário não autenticado ou credenciais incompletas');
+      setResources([]);
       return;
     }
     
@@ -93,7 +63,10 @@ const UserResourcesPanel = () => {
       
       const response = await fetch(`${backendUrl}/api/aws/resources/${userId}`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
       });
 
       console.log('UserResourcesPanel: Response status:', response.status);
@@ -101,20 +74,38 @@ const UserResourcesPanel = () => {
       if (response.ok) {
         const data = await response.json();
         console.log('UserResourcesPanel: Recursos recebidos:', data);
-        const resourcesWithStatus = data.resources || [];
+        const resourcesData = data.resources || [];
         
-        // Verificar status real de cada recurso
-        for (let resource of resourcesWithStatus) {
-          const realStatus = await checkResourceStatus(resource.id, resource.type);
-          resource.status = realStatus;
+        // Set region from credentials if not set
+        const resourcesWithRegion = resourcesData.map((resource: CreatedResource) => ({
+          ...resource,
+          region: resource.region || awsAuth.credentials?.region || 'us-east-1'
+        }));
+        
+        setResources(resourcesWithRegion);
+        
+        if (resourcesWithRegion.length > 0) {
+          toast({
+            title: "Recursos carregados!",
+            description: `${resourcesWithRegion.length} recurso(s) encontrado(s)`,
+          });
         }
-        
-        setResources(resourcesWithStatus);
       } else {
-        console.error('UserResourcesPanel: Erro na resposta:', response.status, response.statusText);
+        const errorText = await response.text();
+        console.error('UserResourcesPanel: Erro na resposta:', response.status, errorText);
+        toast({
+          title: "Erro ao carregar recursos",
+          description: "Não foi possível carregar os recursos criados",
+          variant: "destructive"
+        });
       }
     } catch (error) {
       console.error("UserResourcesPanel: Erro ao carregar recursos:", error);
+      toast({
+        title: "Erro de conexão",
+        description: "Erro ao conectar com o servidor",
+        variant: "destructive"
+      });
     } finally {
       setIsLoading(false);
     }
@@ -136,7 +127,7 @@ const UserResourcesPanel = () => {
           userId,
           resourceId: resource.id,
           resourceType: resource.type,
-          region: awsAuth.credentials.region || 'us-east-1'
+          region: resource.region
         }),
       });
 
@@ -157,11 +148,13 @@ const UserResourcesPanel = () => {
 
   useEffect(() => {
     console.log('UserResourcesPanel: useEffect executado, isAuthenticated:', awsAuth.isAuthenticated);
-    loadResources();
-    
-    // Auto-refresh resources every 30 seconds
-    const interval = setInterval(loadResources, 30000);
-    return () => clearInterval(interval);
+    if (awsAuth.isAuthenticated) {
+      loadResources();
+      
+      // Auto-refresh resources every 30 seconds
+      const interval = setInterval(loadResources, 30000);
+      return () => clearInterval(interval);
+    }
   }, [awsAuth.isAuthenticated]);
 
   const getResourceIcon = (type: string) => {
@@ -169,6 +162,7 @@ const UserResourcesPanel = () => {
       'vpc': '🌐',
       'subnet': '🔗',
       'ec2': '💻',
+      'instance': '💻',
       'security-group': '🛡️',
       'load-balancer': '⚖️',
       'internet-gateway': '🌍'
@@ -208,6 +202,7 @@ const UserResourcesPanel = () => {
         consoleUrl = `https://${region}.console.aws.amazon.com/vpc/home?region=${region}#subnets:SubnetId=${resource.id}`;
         break;
       case 'ec2':
+      case 'instance':
         consoleUrl = `https://${region}.console.aws.amazon.com/ec2/home?region=${region}#InstanceDetails:instanceId=${resource.id}`;
         break;
       case 'security-group':
@@ -226,6 +221,29 @@ const UserResourcesPanel = () => {
     window.open(consoleUrl, '_blank');
   };
 
+  if (!awsAuth.isAuthenticated) {
+    return (
+      <Card className="border-0 shadow-lg">
+        <CardHeader>
+          <CardTitle className="flex items-center space-x-2">
+            <Database className="h-5 w-5" />
+            <span>Recursos Criados</span>
+          </CardTitle>
+          <CardDescription>
+            Faça login para ver seus recursos AWS
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-gray-500">
+            <Database className="h-12 w-12 mx-auto mb-4 opacity-50" />
+            <p>Login necessário</p>
+            <p className="text-sm">Conecte-se ao AWS para ver seus recursos</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="border-0 shadow-lg">
       <CardHeader>
@@ -233,6 +251,11 @@ const UserResourcesPanel = () => {
           <div className="flex items-center space-x-2">
             <Database className="h-5 w-5" />
             <span>Recursos Criados</span>
+            {resources.length > 0 && (
+              <Badge variant="secondary">
+                {resources.length}
+              </Badge>
+            )}
           </div>
           <Button 
             variant="outline" 
@@ -245,16 +268,21 @@ const UserResourcesPanel = () => {
           </Button>
         </CardTitle>
         <CardDescription>
-          IDs dos recursos AWS criados para reutilização
+          Recursos AWS criados pelos seus deployments
         </CardDescription>
       </CardHeader>
       <CardContent>
         <ScrollArea className="h-96 w-full">
-          {resources.length === 0 ? (
+          {isLoading ? (
+            <div className="text-center py-8 text-gray-500">
+              <RefreshCw className="h-8 w-8 mx-auto mb-4 animate-spin" />
+              <p>Carregando recursos...</p>
+            </div>
+          ) : resources.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               <Database className="h-12 w-12 mx-auto mb-4 opacity-50" />
               <p>Nenhum recurso criado ainda</p>
-              <p className="text-sm">Os recursos aparecerão aqui após o deployment</p>
+              <p className="text-sm">Execute um deployment para ver os recursos aqui</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -273,7 +301,11 @@ const UserResourcesPanel = () => {
                         </Badge>
                       </div>
                       <p className="text-xs text-gray-500 font-mono">{resource.id}</p>
-                      <p className="text-xs text-gray-400">{resource.createdAt}</p>
+                      <div className="flex items-center space-x-2 text-xs text-gray-400">
+                        <span>{resource.region}</span>
+                        <span>•</span>
+                        <span>{new Date(resource.createdAt).toLocaleDateString('pt-BR')}</span>
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">

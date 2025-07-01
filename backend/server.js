@@ -28,6 +28,118 @@ app.get('/health', (req, res) => {
 const awsCredentialsStore = {};
 const azureCredentialsStore = {};
 
+// Function to get user-specific temp directory
+const getUserTempDir = (userId) => {
+    const userTempDir = path.join(__dirname, 'temp', userId);
+    if (!fs.existsSync(userTempDir)) {
+        fs.mkdirSync(userTempDir, { recursive: true });
+    }
+    return userTempDir;
+};
+
+// Function to save created resources
+const saveCreatedResource = (userId, resource) => {
+    try {
+        const userTempDir = getUserTempDir(userId);
+        const resourcesFile = path.join(userTempDir, 'created_resources.json');
+        
+        let resources = [];
+        if (fs.existsSync(resourcesFile)) {
+            const data = fs.readFileSync(resourcesFile, 'utf8');
+            resources = JSON.parse(data);
+        }
+        
+        resources.push({
+            ...resource,
+            createdAt: new Date().toISOString()
+        });
+        
+        fs.writeFileSync(resourcesFile, JSON.stringify(resources, null, 2));
+        console.log(`✅ Recurso salvo para usuário ${userId}:`, resource);
+    } catch (error) {
+        console.error('❌ Erro ao salvar recurso:', error);
+    }
+};
+
+// Function to parse Terraform output and extract resource IDs
+const parseResourcesFromOutput = (output, userId) => {
+    const resources = [];
+    const lines = output.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        
+        // Look for resource creation patterns
+        if (line.includes(': Creation complete after')) {
+            const match = line.match(/([^:]+): Creation complete after .* \[id=([^\]]+)\]/);
+            if (match) {
+                const resourceName = match[1].trim();
+                const resourceId = match[2];
+                
+                // Parse resource type and name
+                const parts = resourceName.split('.');
+                if (parts.length >= 2) {
+                    const resourceType = parts[0].replace('aws_', '');
+                    const name = parts[1];
+                    
+                    const resource = {
+                        id: resourceId,
+                        type: resourceType,
+                        name: name,
+                        status: 'available',
+                        region: 'us-east-1' // Default region
+                    };
+                    
+                    resources.push(resource);
+                    saveCreatedResource(userId, resource);
+                }
+            }
+        }
+    }
+    
+    return resources;
+};
+
+// Endpoint to get user resources
+app.get('/api/aws/resources/:userId', (req, res) => {
+    const { userId } = req.params;
+    console.log('📋 Carregando recursos para userId:', userId);
+    
+    try {
+        const userTempDir = getUserTempDir(userId);
+        const resourcesFile = path.join(userTempDir, 'created_resources.json');
+        
+        if (fs.existsSync(resourcesFile)) {
+            const data = fs.readFileSync(resourcesFile, 'utf8');
+            const resources = JSON.parse(data);
+            console.log('✅ Recursos encontrados:', resources.length);
+            res.json({ resources: resources });
+        } else {
+            console.log('📭 Nenhum recurso encontrado para userId:', userId);
+            res.json({ resources: [] });
+        }
+    } catch (error) {
+        console.error('❌ Erro ao carregar recursos:', error);
+        res.status(500).json({ error: 'Erro ao carregar recursos' });
+    }
+});
+
+// Endpoint to check resource status
+app.post('/api/aws/resource-status', (req, res) => {
+    const { resourceId, resourceType } = req.body;
+    
+    // For now, return a default status - in a real implementation, this would check AWS
+    res.json({ status: 'available' });
+});
+
+// Endpoint to get resource details
+app.post('/api/aws/resource-details', (req, res) => {
+    const { resourceId, resourceType } = req.body;
+    
+    // For now, return empty details - in a real implementation, this would fetch from AWS
+    res.json({ details: {} });
+});
+
 // Endpoint para armazenar credenciais AWS
 app.post('/api/aws/credentials', (req, res) => {
     console.log('📝 Recebendo credenciais AWS...');
@@ -64,17 +176,18 @@ app.post('/api/aws/credentials', (req, res) => {
 // Add new endpoint for Terraform reinitialization
 app.post('/api/terraform/reinit', async (req, res) => {
     console.log('🔄 Reinicializando Terraform para nova execução...');
+    const { userId } = req.body;
     
     try {
-        const tempDir = path.join(__dirname, 'temp');
+        const userTempDir = getUserTempDir(userId || 'default');
         
         // Clean up any existing state files
         const stateFiles = ['.terraform.lock.hcl', 'terraform.tfstate', 'terraform.tfstate.backup'];
-        const terraformDir = path.join(tempDir, '.terraform');
+        const terraformDir = path.join(userTempDir, '.terraform');
         
         // Remove state files
         stateFiles.forEach(file => {
-            const filePath = path.join(tempDir, file);
+            const filePath = path.join(userTempDir, file);
             if (fs.existsSync(filePath)) {
                 try {
                     fs.unlinkSync(filePath);
@@ -121,19 +234,16 @@ app.post('/api/aws/deploy', async (req, res) => {
     }
 
     const awsAuthCredentials = awsCredentialsStore[auth.userId];
+    const userId = auth.userId;
     console.log('Credenciais encontradas, gerando Terraform...');
 
     // Generate Terraform .tf file content dynamically based on selected resources
     const terraformCode = generateTerraformCodeAWS(resources, config, awsAuthCredentials);
-    const tempDir = path.join(__dirname, 'temp');
-    const tfFilePath = path.join(tempDir, 'aws_deployment.tf');
-    const tfVarsFilePath = path.join(tempDir, 'terraform.tfvars');
+    const userTempDir = getUserTempDir(userId);
+    const tfFilePath = path.join(userTempDir, 'aws_deployment.tf');
+    const tfVarsFilePath = path.join(userTempDir, 'terraform.tfvars');
 
     try {
-        if (!fs.existsSync(tempDir)){
-            fs.mkdirSync(tempDir);
-        }
-        
         fs.writeFileSync(tfFilePath, terraformCode);
         console.log('Arquivo .tf criado:', tfFilePath);
         
@@ -150,13 +260,14 @@ app.post('/api/aws/deploy', async (req, res) => {
         res.setHeader('Transfer-Encoding', 'chunked');
 
         const logs = [];
+        let allOutput = '';
         
         // Send initial message
         res.write(JSON.stringify({ type: 'log', message: 'Iniciando Terraform init...\n' }));
         console.log('🚀 Executando terraform init...');
 
         const terraformInit = spawn('terraform', ['init'], { 
-            cwd: tempDir,
+            cwd: userTempDir,
             stdio: ['pipe', 'pipe', 'pipe']
         });
 
@@ -166,6 +277,7 @@ app.post('/api/aws/deploy', async (req, res) => {
         terraformInit.stdout.on('data', (data) => {
             const message = data.toString();
             initOutput += message;
+            allOutput += message;
             console.log('TERRAFORM INIT STDOUT:', message);
             logs.push(message);
             res.write(JSON.stringify({ type: 'log', message: message }));
@@ -174,6 +286,7 @@ app.post('/api/aws/deploy', async (req, res) => {
         terraformInit.stderr.on('data', (data) => {
             const message = `ERROR: ${data.toString()}`;
             initError += data.toString();
+            allOutput += data.toString();
             console.error('TERRAFORM INIT STDERR:', data.toString());
             logs.push(message);
             res.write(JSON.stringify({ type: 'log', message: message }));
@@ -197,7 +310,7 @@ app.post('/api/aws/deploy', async (req, res) => {
             res.write(JSON.stringify({ type: 'log', message: '\nTerraform init concluído. Iniciando apply --auto-approve...\n' }));
 
             const terraformApply = spawn('terraform', ['apply', '-auto-approve', `-var-file=${tfVarsFilePath}`], { 
-                cwd: tempDir,
+                cwd: userTempDir,
                 stdio: ['pipe', 'pipe', 'pipe']
             });
 
@@ -207,6 +320,7 @@ app.post('/api/aws/deploy', async (req, res) => {
             terraformApply.stdout.on('data', (data) => {
                 const message = data.toString();
                 applyOutput += message;
+                allOutput += message;
                 console.log('TERRAFORM APPLY STDOUT:', message);
                 logs.push(message);
                 res.write(JSON.stringify({ type: 'log', message: message }));
@@ -215,6 +329,7 @@ app.post('/api/aws/deploy', async (req, res) => {
             terraformApply.stderr.on('data', (data) => {
                 const message = `ERROR: ${data.toString()}`;
                 applyError += data.toString();
+                allOutput += message;
                 console.error('TERRAFORM APPLY STDERR:', data.toString());
                 logs.push(message);
                 res.write(JSON.stringify({ type: 'log', message: message }));
@@ -233,17 +348,20 @@ app.post('/api/aws/deploy', async (req, res) => {
                     }));
                 } else {
                     console.log('Terraform apply concluído com sucesso!');
-                    res.write(JSON.stringify({ type: 'success', message: 'Deployment complete!' }));
+                    
+                    // Parse resources from output and save them
+                    const createdResources = parseResourcesFromOutput(allOutput, userId);
+                    console.log('📋 Recursos criados detectados:', createdResources);
+                    
+                    res.write(JSON.stringify({ 
+                        type: 'success', 
+                        message: 'Deployment complete!',
+                        resources: createdResources
+                    }));
                 }
                 
-                // Clean up files
-                try {
-                    fs.unlinkSync(tfFilePath);
-                    fs.unlinkSync(tfVarsFilePath);
-                    console.log('Arquivos temporários limpos');
-                } catch (err) {
-                    console.error('Error cleaning up files:', err);
-                }
+                // Don't clean up files anymore - keep them for user management
+                console.log('📁 Arquivos mantidos na pasta do usuário:', userTempDir);
                 
                 res.end();
             });
@@ -411,21 +529,19 @@ app.post('/api/azure/deploy', async (req, res) => {
     }
 
     const azureAuthCredentials = azureCredentialsStore[auth.userId];
+    const userId = auth.userId;
 
     const terraformCode = generateTerraformCodeAzure(config);
-    const tfFilePath = path.join(__dirname, 'temp', 'azure_deployment.tf');
-    const tfVarsFilePath = path.join(__dirname, 'temp', 'terraform.tfvars');
+    const userTempDir = getUserTempDir(userId);
+    const tfFilePath = path.join(userTempDir, 'azure_deployment.tf');
+    const tfVarsFilePath = path.join(userTempDir, 'terraform.tfvars');
 
     try {
-        if (!fs.existsSync(path.join(__dirname, 'temp'))){
-            fs.mkdirSync(path.join(__dirname, 'temp'));
-        }
         fs.writeFileSync(tfFilePath, terraformCode);
         fs.writeFileSync(tfVarsFilePath, `subscription_id = "${azureAuthCredentials.subscriptionId}"\nclient_id = "${azureAuthCredentials.clientId}"\nclient_secret = "${azureAuthCredentials.clientSecret}"\ntenant_id = "${azureAuthCredentials.tenantId}"\nlocation = "${azureAuthCredentials.location}"`);
 
-
         const logs = [];
-        const terraformInit = spawn('terraform', ['init'], { cwd: path.join(__dirname, 'temp') });
+        const terraformInit = spawn('terraform', ['init'], { cwd: userTempDir });
 
         terraformInit.stdout.on('data', (data) => {
             logs.push(data.toString());
@@ -443,7 +559,7 @@ app.post('/api/azure/deploy', async (req, res) => {
                 return res.end();
             }
 
-            const terraformApply = spawn('terraform', ['apply', '-auto-approve', `-var-file=${tfVarsFilePath}`], { cwd: path.join(__dirname, 'temp') });
+            const terraformApply = spawn('terraform', ['apply', '-auto-approve', `-var-file=${tfVarsFilePath}`], { cwd: userTempDir });
 
             terraformApply.stdout.on('data', (data) => {
                 logs.push(data.toString());
@@ -461,8 +577,6 @@ app.post('/api/azure/deploy', async (req, res) => {
                 } else {
                     res.write(JSON.stringify({ type: 'success', message: 'Deployment complete!' }));
                 }
-                fs.unlinkSync(tfFilePath);
-                fs.unlinkSync(tfVarsFilePath);
                 res.end();
             });
         });
@@ -552,12 +666,10 @@ admin_password = "Password1234!" // WARNING: Hardcoded password, use a more secu
 // Add new endpoint for Terraform initialization
 app.post('/api/terraform/init', async (req, res) => {
     console.log('Inicializando Terraform...');
+    const { userId } = req.body;
+    const userTempDir = getUserTempDir(userId || 'default');
     
     try {
-        if (!fs.existsSync(path.join(__dirname, 'temp'))){
-            fs.mkdirSync(path.join(__dirname, 'temp'));
-        }
-        
         // Create a basic terraform configuration for initialization
         const basicTerraformConfig = `terraform {
   required_version = ">=1.6.0"
@@ -573,11 +685,11 @@ app.post('/api/terraform/init', async (req, res) => {
   }
 }`;
         
-        const tfFilePath = path.join(__dirname, 'temp', 'init.tf');
+        const tfFilePath = path.join(userTempDir, 'init.tf');
         fs.writeFileSync(tfFilePath, basicTerraformConfig);
         
         const terraformInit = spawn('terraform', ['init'], { 
-            cwd: path.join(__dirname, 'temp'),
+            cwd: userTempDir,
             stdio: 'pipe'
         });
         
