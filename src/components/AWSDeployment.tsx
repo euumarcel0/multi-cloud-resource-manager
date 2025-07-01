@@ -5,12 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Info, Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { ServerManager } from "@/utils/serverManager";
+import SSMInstructionsModal from "./SSMInstructionsModal";
 
 interface SelectedResources {
   vpc: boolean;
@@ -48,6 +48,9 @@ const AWSDeployment = () => {
   const [deploymentLogs, setDeploymentLogs] = useState<string>("");
   const [createdResources, setCreatedResources] = useState<CreatedResource[]>([]);
   const [securityGroupRules, setSecurityGroupRules] = useState<SecurityGroupRule[]>([]);
+  const [showSSMModal, setShowSSMModal] = useState(false);
+  const [lastCreatedInstanceType, setLastCreatedInstanceType] = useState<'linux' | 'windows'>('linux');
+  const [lastCreatedInstanceId, setLastCreatedInstanceId] = useState<string>('');
   
   const [selectedResources, setSelectedResources] = useState<SelectedResources>({
     vpc: false,
@@ -60,42 +63,26 @@ const AWSDeployment = () => {
   });
 
   const [config, setConfig] = useState({
-    // VPC Config
     vpcName: "main-vpc",
     vpcCidr: "10.0.0.0/16",
-    
-    // Internet Gateway Config
     internetGatewayName: "main-igw",
     internetGatewayVpcId: "",
-    
-    // Public Subnet Config
     publicSubnetName: "public-subnet",
     publicSubnetCidr: "10.0.1.0/24",
-    
-    // Private Subnet Config
     privateSubnetName: "private-subnet", 
     privateSubnetCidr: "10.0.2.0/24",
-    
-    // Load Balancer Config
     loadBalancerName: "main-lb",
     loadBalancerType: "application",
-    
-    // EC2 Config
     instanceType: "t3.medium",
     instanceName: "main-instance",
-    osType: "windows", // windows or linux
-    
-    // Security Group Config
+    osType: "windows",
     sgName: "main-sg",
-    
-    // Existing Resources
     existingVpcId: "",
     existingPublicSubnetId: "",
     existingPrivateSubnetId: "",
     existingSecurityGroupId: ""
   });
 
-  // Load created resources on component mount
   useEffect(() => {
     loadCreatedResources();
   }, [awsAuth.isAuthenticated]);
@@ -167,7 +154,7 @@ const AWSDeployment = () => {
           title: "Recurso excluído",
           description: "O recurso foi excluído com sucesso.",
         });
-        loadCreatedResources(); // Reload resources
+        loadCreatedResources();
       } else {
         throw new Error('Falha ao excluir recurso');
       }
@@ -181,7 +168,6 @@ const AWSDeployment = () => {
     }
   };
 
-  // Clean ANSI codes from logs
   const cleanAnsiCodes = (text: string) => {
     return text.replace(/\x1b\[[0-9;]*[mGK]/g, '');
   };
@@ -300,12 +286,19 @@ const AWSDeployment = () => {
                         setDeploymentLogs(prev => prev + `\n✅ ${cleanedMessage}\n`);
                         if (data.resources) {
                           setDeploymentLogs(prev => prev + `\n📋 Recursos criados:\n${data.resources.map((r: any) => `• ${r.type}: ${r.id}`).join('\n')}\n`);
+                          
+                          // Check if EC2 instance was created and show modal
+                          const ec2Instance = data.resources.find((r: any) => r.type === 'aws_instance');
+                          if (ec2Instance && selectedResources.ec2) {
+                            setLastCreatedInstanceType(config.osType as 'linux' | 'windows');
+                            setLastCreatedInstanceId(ec2Instance.id);
+                            setShowSSMModal(true);
+                          }
                         }
                         toast({
                             title: "Deployment Completo",
                             description: "Recursos criados com sucesso! Terraform configuração salva.",
                         });
-                        // Reload created resources after successful deployment
                         loadCreatedResources();
                     }
                 } catch (parseError) {
@@ -452,8 +445,8 @@ resource "aws_lb" "main" {
 
     if (selectedResources.ec2) {
         const amiMap = {
-            windows: 'ami-0c02fb55956c7d316', // Windows Server 2022
-            linux: 'ami-0abcdef1234567890'     // Amazon Linux 2
+            windows: 'ami-0c02fb55956c7d316',
+            linux: 'ami-0abcdef1234567890'
         };
 
         let subnetRef = '';
@@ -616,101 +609,7 @@ resource "aws_instance" "main" {
         </div>
       </div>
 
-      {/* Complete SSM Access Information */}
-      <Card className="border-blue-200 bg-blue-50">
-        <CardContent className="p-6">
-          <div className="flex items-start space-x-3">
-            <Info className="h-6 w-6 text-blue-600 mt-0.5 flex-shrink-0" />
-            <div className="space-y-4 flex-1">
-              <div>
-                <h4 className="text-lg font-semibold text-blue-900 mb-3">🔐 Acessando EC2 via SSM — Passo a Passo (Linux e Windows)</h4>
-              </div>
-              
-              <div className="text-sm text-blue-800 space-y-4">
-                <div className="bg-blue-100 p-4 rounded-lg">
-                  <strong className="text-blue-900">☁️ Pré-requisitos (válido para ambos):</strong>
-                  <ul className="list-disc list-inside ml-2 mt-2 space-y-1">
-                    <li><strong>AWS CLI instalada</strong> → <a href="https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html" className="underline text-blue-700" target="_blank" rel="noopener noreferrer">https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html</a></li>
-                    <li><strong>Session Manager Plugin instalado</strong> → <a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html" className="underline text-blue-700" target="_blank" rel="noopener noreferrer">Link oficial</a></li>
-                    <li><strong>Autenticação configurada:</strong> <code className="bg-blue-200 px-2 py-1 rounded text-blue-900">aws configure</code></li>
-                  </ul>
-                </div>
-                
-                <div className="bg-blue-100 p-4 rounded-lg">
-                  <strong className="text-blue-900">🔑 Seu usuário IAM precisa de permissões SSM:</strong>
-                  <pre className="bg-blue-200 p-3 rounded mt-2 text-xs overflow-x-auto text-blue-900">
-{`{
-  "Effect": "Allow",
-  "Action": [
-    "ssm:StartSession",
-    "ssm:DescribeInstanceInformation",
-    "ssm:DescribeSessions",
-    "ssm:TerminateSession"
-  ],
-  "Resource": "*"
-}`}
-                  </pre>
-                </div>
-                
-                <div className="bg-green-100 p-4 rounded-lg">
-                  <strong className="text-green-900">🐧 Conectar em EC2 Linux via SSM:</strong>
-                  <code className="block bg-green-200 p-3 rounded mt-2 text-sm text-green-900">
-                    aws ssm start-session --target &lt;INSTANCE_ID&gt;
-                  </code>
-                  <p className="text-sm mt-2 text-green-800">
-                    <strong>Exemplo:</strong> <code className="bg-green-200 px-2 py-1 rounded">aws ssm start-session --target i-0123456789abcdef0</code>
-                  </p>
-                  <p className="text-sm mt-1 text-green-800">
-                    <strong>Resultado esperado:</strong> <code className="bg-green-200 px-2 py-1 rounded">[ec2-user@ip-10-0-0-123 ~]$</code>
-                  </p>
-                </div>
-                
-                <div className="bg-purple-100 p-4 rounded-lg">
-                  <strong className="text-purple-900">🪟 Conectar em EC2 Windows via SSM (terminal):</strong>
-                  <code className="block bg-purple-200 p-3 rounded mt-2 text-sm text-purple-900">
-                    aws ssm start-session --target &lt;INSTANCE_ID&gt;
-                  </code>
-                  <p className="text-sm mt-2 text-purple-800">
-                    <strong>Exemplo:</strong> <code className="bg-purple-200 px-2 py-1 rounded">aws ssm start-session --target i-0abcde1234567890f</code>
-                  </p>
-                  <p className="text-sm mt-1 text-purple-800">
-                    <strong>Resultado esperado:</strong> <code className="bg-purple-200 px-2 py-1 rounded">C:\Users\Administrator&gt;</code>
-                  </p>
-                </div>
-                
-                <div className="bg-indigo-100 p-4 rounded-lg">
-                  <strong className="text-indigo-900">🖥️ (Opcional) Acessar Windows com RDP via túnel SSM:</strong>
-                  <pre className="bg-indigo-200 p-3 rounded mt-2 text-xs overflow-x-auto text-indigo-900">
-{`aws ssm start-session \\
-  --target <INSTANCE_ID> \\
-  --document-name AWS-StartPortForwardingSession \\
-  --parameters '{"portNumber":["3389"],"localPortNumber":["13389"]}'`}
-                  </pre>
-                  <p className="text-sm mt-2 text-indigo-800">
-                    Em seguida, abra o <strong>Remote Desktop (mstsc)</strong> e conecte em: <code className="bg-indigo-200 px-2 py-1 rounded">localhost:13389</code>
-                  </p>
-                  <p className="text-sm mt-1 text-indigo-800 font-medium">
-                    🔐 Você acessa via túnel seguro, sem IP público nem abrir portas na instância.
-                  </p>
-                </div>
-                
-                <div className="bg-yellow-100 p-4 rounded-lg">
-                  <strong className="text-yellow-900">✅ Observações Finais:</strong>
-                  <ul className="list-disc list-inside ml-2 mt-2 space-y-1 text-yellow-800">
-                    <li>A EC2 deve ter o <strong>SSM Agent ativo</strong>.</li>
-                    <li>A instância precisa ter uma <strong>IAM Role</strong> com a policy: <code className="bg-yellow-200 px-2 py-1 rounded text-xs">arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore</code></li>
-                    <li>A subnet da instância precisa de <strong>acesso à internet</strong> ou VPC endpoints para SSM.</li>
-                    <li>Todas as instâncias criadas por este sistema já vêm <strong>configuradas automaticamente</strong> com SSM.</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Resource Selection */}
         <Card className="border-0 shadow-lg">
           <CardHeader>
             <CardTitle>Seleção de Recursos</CardTitle>
@@ -737,7 +636,6 @@ resource "aws_instance" "main" {
           </CardContent>
         </Card>
 
-        {/* Configuration Panel */}
         <Card className="border-0 shadow-lg">
           <CardHeader>
             <CardTitle>Configuração</CardTitle>
@@ -1027,7 +925,6 @@ resource "aws_instance" "main" {
                   </Select>
                 </div>
                 
-                {/* Enhanced SSM Information for EC2 */}
                 <div className="mt-4 p-3 bg-orange-100 rounded-lg border-l-4 border-orange-500">
                   <div className="flex items-start space-x-2">
                     <Info className="h-5 w-5 text-orange-600 mt-0.5 flex-shrink-0" />
@@ -1037,7 +934,7 @@ resource "aws_instance" "main" {
                         <div className="space-y-2">
                           <p>✅ <strong>Windows Server 2022</strong> com SSM habilitado automaticamente</p>
                           <p>🔑 <strong>Acesso via Session Manager:</strong> Não precisa de chaves SSH</p>
-                          <p>🖥️ <strong>Acesso RDP:</strong> Via túnel SSM (veja instruções acima)</p>
+                          <p>🖥️ <strong>Acesso RDP:</strong> Via túnel SSM</p>
                           <p>⚡ <strong>Pronto para usar:</strong> PowerShell remoto habilitado</p>
                         </div>
                       ) : (
@@ -1049,7 +946,7 @@ resource "aws_instance" "main" {
                         </div>
                       )}
                       <p className="mt-2 text-orange-700 font-medium">
-                        ⚠️ Certifique-se de ter configurado as permissões IAM mencionadas acima antes de tentar conectar.
+                        ℹ️ Instruções de acesso completas aparecerão após a criação da instância.
                       </p>
                     </div>
                   </div>
@@ -1059,7 +956,6 @@ resource "aws_instance" "main" {
           </CardContent>
         </Card>
 
-        {/* Created Resources */}
         <Card className="border-0 shadow-lg">
           <CardHeader>
             <CardTitle>Recursos Criados</CardTitle>
@@ -1115,7 +1011,6 @@ resource "aws_instance" "main" {
         </Card>
       </div>
 
-      {/* Action Buttons */}
       <div className="flex space-x-2">
         <Button 
           onClick={handleDeploy} 
@@ -1143,7 +1038,6 @@ resource "aws_instance" "main" {
         </Button>
       </div>
 
-      {/* Terraform Code Preview */}
       {showTerraform && (
         <Card className="border-0 shadow-lg">
           <CardHeader>
@@ -1162,7 +1056,6 @@ resource "aws_instance" "main" {
         </Card>
       )}
 
-      {/* Deployment Logs */}
       {deploymentLogs && (
         <Card className="border-0 shadow-lg">
           <CardHeader>
@@ -1190,6 +1083,13 @@ resource "aws_instance" "main" {
           </CardContent>
         </Card>
       )}
+
+      <SSMInstructionsModal
+        isOpen={showSSMModal}
+        onClose={() => setShowSSMModal(false)}
+        osType={lastCreatedInstanceType}
+        instanceId={lastCreatedInstanceId}
+      />
     </div>
   );
 };
