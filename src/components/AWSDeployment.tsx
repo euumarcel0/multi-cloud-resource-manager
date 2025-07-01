@@ -6,11 +6,12 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Info, Plus, Trash2 } from "lucide-react";
+import { Server, Play, RotateCcw, Eye, EyeOff, AlertCircle, Info, Plus, Trash2, AlertTriangle } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { ServerManager } from "@/utils/serverManager";
 import SSMInstructionsModal from "./SSMInstructionsModal";
+import LogFormatter from "./LogFormatter";
 
 interface SelectedResources {
   vpc: boolean;
@@ -51,6 +52,7 @@ const AWSDeployment = () => {
   const [showSSMModal, setShowSSMModal] = useState(false);
   const [lastCreatedInstanceType, setLastCreatedInstanceType] = useState<'linux' | 'windows'>('linux');
   const [lastCreatedInstanceId, setLastCreatedInstanceId] = useState<string>('');
+  const [deploymentError, setDeploymentError] = useState<string>('');
   
   const [selectedResources, setSelectedResources] = useState<SelectedResources>({
     vpc: false,
@@ -94,15 +96,18 @@ const AWSDeployment = () => {
       const backendUrl = ServerManager.getBackendUrl();
       const userId = awsAuth.credentials && 'accessKey' in awsAuth.credentials ? awsAuth.credentials.accessKey : '';
       
-      const response = await fetch(`${backendUrl}/api/aws/resources`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId }),
+      const response = await fetch(`${backendUrl}/api/aws/resources/${userId}`, {
+        method: 'GET',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
       });
 
       if (response.ok) {
         const data = await response.json();
         setCreatedResources(data.resources || []);
+        console.log('✅ Recursos carregados:', data.resources?.length || 0);
       }
     } catch (error) {
       console.error('Error loading created resources:', error);
@@ -172,6 +177,40 @@ const AWSDeployment = () => {
     return text.replace(/\x1b\[[0-9;]*[mGK]/g, '');
   };
 
+  const parseAWSError = (errorMessage: string) => {
+    if (errorMessage.includes('VpcLimitExceeded')) {
+      return {
+        type: 'VPC_LIMIT',
+        title: 'Limite de VPCs Atingido',
+        message: 'Sua conta AWS atingiu o limite máximo de VPCs. Você precisa deletar VPCs não utilizadas ou usar uma VPC existente.',
+        suggestions: [
+          'Delete VPCs não utilizadas no Console AWS',
+          'Use uma VPC existente desmarcando "VPC" e preenchendo "ID da VPC Existente"',
+          'Solicite aumento de limite à AWS (demora alguns dias)'
+        ]
+      };
+    }
+    
+    if (errorMessage.includes('UnauthorizedOperation')) {
+      return {
+        type: 'PERMISSION',
+        title: 'Erro de Permissão',
+        message: 'Suas credenciais AWS não têm permissão para criar este recurso.',
+        suggestions: [
+          'Verifique se suas credenciais AWS têm as permissões necessárias',
+          'Entre em contato com o administrador da sua conta AWS'
+        ]
+      };
+    }
+
+    return {
+      type: 'GENERAL',
+      title: 'Erro no Deployment',
+      message: errorMessage,
+      suggestions: ['Verifique os logs para mais detalhes']
+    };
+  };
+
   const handleDeploy = async () => {
     if (!awsAuth.isAuthenticated || !awsAuth.credentials || !('accessKey' in awsAuth.credentials)) {
       toast({
@@ -203,6 +242,7 @@ const AWSDeployment = () => {
 
     setIsDeploying(true);
     setDeploymentLogs("🚀 Iniciando deployment AWS...\n");
+    setDeploymentError('');
     
     try {
         const backendUrl = ServerManager.getBackendUrl();
@@ -276,30 +316,43 @@ const AWSDeployment = () => {
                     } else if (data.type === 'error') {
                         const cleanedMessage = cleanAnsiCodes(data.message);
                         setDeploymentLogs(prev => prev + `\n❌ Erro: ${cleanedMessage}\n`);
+                        setDeploymentError(cleanedMessage);
+                        
+                        const errorInfo = parseAWSError(cleanedMessage);
                         toast({
-                            title: "Deployment Falhou",
-                            description: cleanedMessage,
+                            title: errorInfo.title,
+                            description: errorInfo.message,
                             variant: "destructive"
                         });
+
+                        // Load resources even on error - some might have been created
+                        if (data.resources && data.resources.length > 0) {
+                          setDeploymentLogs(prev => prev + `\n📋 Recursos criados antes do erro:\n${data.resources.map((r: any) => `• ${r.type}: ${r.id}`).join('\n')}\n`);
+                          loadCreatedResources();
+                        }
                     } else if (data.type === 'success') {
                         const cleanedMessage = cleanAnsiCodes(data.message);
                         setDeploymentLogs(prev => prev + `\n✅ ${cleanedMessage}\n`);
+                        setDeploymentError('');
+                        
                         if (data.resources) {
                           setDeploymentLogs(prev => prev + `\n📋 Recursos criados:\n${data.resources.map((r: any) => `• ${r.type}: ${r.id}`).join('\n')}\n`);
                           
                           // Check if EC2 instance was created and show modal
-                          const ec2Instance = data.resources.find((r: any) => r.type === 'aws_instance');
+                          const ec2Instance = data.resources.find((r: any) => r.type === 'instance');
                           if (ec2Instance && selectedResources.ec2) {
                             setLastCreatedInstanceType(config.osType as 'linux' | 'windows');
                             setLastCreatedInstanceId(ec2Instance.id);
                             setShowSSMModal(true);
                           }
+                          
+                          loadCreatedResources();
                         }
+                        
                         toast({
                             title: "Deployment Completo",
-                            description: "Recursos criados com sucesso! Terraform configuração salva.",
+                            description: "Recursos criados com sucesso!",
                         });
-                        loadCreatedResources();
                     }
                 } catch (parseError) {
                     const cleanedLine = cleanAnsiCodes(line);
@@ -315,6 +368,7 @@ const AWSDeployment = () => {
         if (error instanceof TypeError && error.message.includes('fetch')) {
             const networkError = `Erro de conexão com o backend em: ${ServerManager.getBackendUrl()}`;
             setDeploymentLogs(prev => prev + `\n❌ ${networkError}\n`);
+            setDeploymentError(networkError);
             toast({
                 title: "Erro de Conexão",
                 description: networkError,
@@ -322,6 +376,7 @@ const AWSDeployment = () => {
             });
         } else {
             setDeploymentLogs(prev => prev + `\n❌ Erro: ${errorMessage}\n`);
+            setDeploymentError(errorMessage);
             toast({
                 title: "Erro no Deployment",
                 description: errorMessage,
@@ -330,6 +385,10 @@ const AWSDeployment = () => {
         }
     } finally {
         setIsDeploying(false);
+        // Always try to load resources after deployment completes
+        setTimeout(() => {
+          loadCreatedResources();
+        }, 1000);
     }
   };
 
@@ -555,7 +614,7 @@ resource "aws_instance" "main" {
               </div>
               <span>AWS Deployment</span>
             </h2>
-            <p className="text-gray-600 mt-1">Configure and deploy your AWS infrastructure</p>
+            <p className="text-gray-600 mt-1">Configure e implante sua infraestrutura AWS</p>
           </div>
         </div>
 
@@ -1075,10 +1134,33 @@ resource "aws_instance" "main" {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="bg-black rounded-lg p-4 h-96 overflow-y-auto">
-              <pre className="text-green-400 text-sm font-mono whitespace-pre-wrap">
-                {deploymentLogs}
-              </pre>
+            <LogFormatter logs={deploymentLogs} />
+          </CardContent>
+        </Card>
+      )}
+
+      {deploymentError && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="pt-6">
+            <div className="flex items-start space-x-3">
+              <AlertTriangle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <h3 className="font-medium text-red-900 mb-2">
+                  {deploymentError.includes('VpcLimitExceeded') ? 'Limite de VPCs Atingido' : 'Erro no Deployment'}
+                </h3>
+                {deploymentError.includes('VpcLimitExceeded') ? (
+                  <div className="text-sm text-red-800 space-y-2">
+                    <p>Sua conta AWS atingiu o limite máximo de VPCs. Para resolver:</p>
+                    <ul className="list-disc list-inside space-y-1 ml-4">
+                      <li>Delete VPCs não utilizadas no Console AWS</li>
+                      <li>Use uma VPC existente (desmarque "VPC" e preencha o ID da VPC)</li>
+                      <li>Solicite aumento de limite à AWS</li>
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="text-sm text-red-800">{deploymentError}</p>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>

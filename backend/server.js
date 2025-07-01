@@ -72,16 +72,16 @@ const parseResourcesFromOutput = (output, userId) => {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         
-        // Look for resource creation patterns
-        if (line.includes(': Creation complete after')) {
-            const match = line.match(/([^:]+): Creation complete after .* \[id=([^\]]+)\]/);
-            if (match) {
-                const resourceName = match[1].trim();
-                const resourceId = match[2];
+        // Look for resource creation patterns - both success and partial success
+        if (line.includes(': Creation complete after') || line.includes(': Creating...')) {
+            // For completed resources
+            const completeMatch = line.match(/([^:]+): Creation complete after .* \[id=([^\]]+)\]/);
+            if (completeMatch) {
+                const resourceName = completeMatch[1].trim();
+                const resourceId = completeMatch[2];
                 
-                console.log('✅ Recurso encontrado:', resourceName, 'ID:', resourceId);
+                console.log('✅ Recurso COMPLETADO encontrado:', resourceName, 'ID:', resourceId);
                 
-                // Parse resource type and name
                 const parts = resourceName.split('.');
                 if (parts.length >= 2) {
                     const resourceType = parts[0].replace('aws_', '');
@@ -92,19 +92,95 @@ const parseResourcesFromOutput = (output, userId) => {
                         type: resourceType,
                         name: name,
                         status: 'available',
-                        region: 'us-east-1' // Default region
+                        region: 'us-east-1'
                     };
                     
-                    console.log('💾 Salvando recurso:', resource);
+                    console.log('💾 Salvando recurso completo:', resource);
                     resources.push(resource);
                     saveCreatedResource(userId, resource);
                 }
             }
+            
+            // For resources that started creating (might have failed later)
+            const creatingMatch = line.match(/([^:]+): Creating\.\.\./);
+            if (creatingMatch && !completeMatch) {
+                const resourceName = creatingMatch[1].trim();
+                console.log('🔄 Recurso em criação:', resourceName);
+                
+                // Check if this resource got an ID in subsequent lines
+                for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+                    const nextLine = lines[j];
+                    if (nextLine.includes(resourceName) && nextLine.includes('[id=')) {
+                        const idMatch = nextLine.match(/\[id=([^\]]+)\]/);
+                        if (idMatch) {
+                            const resourceId = idMatch[1];
+                            console.log('✅ ID encontrado para recurso em criação:', resourceName, 'ID:', resourceId);
+                            
+                            const parts = resourceName.split('.');
+                            if (parts.length >= 2) {
+                                const resourceType = parts[0].replace('aws_', '');
+                                const name = parts[1];
+                                
+                                const resource = {
+                                    id: resourceId,
+                                    type: resourceType,
+                                    name: name,
+                                    status: 'creating',
+                                    region: 'us-east-1'
+                                };
+                                
+                                console.log('💾 Salvando recurso em criação:', resource);
+                                resources.push(resource);
+                                saveCreatedResource(userId, resource);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
         }
         
-        // Also look for failed resources
-        if (line.includes('Error: ') && line.includes('creating')) {
+        // Look for failed resources but that might have been partially created
+        if (line.includes('Error: ') && (line.includes('creating') || line.includes('updating'))) {
             console.log('❌ Erro detectado na criação:', line);
+            
+            // Try to extract resource name from error
+            const errorResourceMatch = line.match(/with ([^,]+),/);
+            if (errorResourceMatch) {
+                const resourceName = errorResourceMatch[1].trim();
+                console.log('🔍 Verificando se recurso com erro tem ID:', resourceName);
+                
+                // Check previous lines for any ID that might have been assigned
+                for (let k = Math.max(0, i - 20); k < i; k++) {
+                    const prevLine = lines[k];
+                    if (prevLine.includes(resourceName) && prevLine.includes('[id=')) {
+                        const idMatch = prevLine.match(/\[id=([^\]]+)\]/);
+                        if (idMatch) {
+                            const resourceId = idMatch[1];
+                            console.log('⚠️ Recurso com erro mas com ID:', resourceName, 'ID:', resourceId);
+                            
+                            const parts = resourceName.split('.');
+                            if (parts.length >= 2) {
+                                const resourceType = parts[0].replace('aws_', '');
+                                const name = parts[1];
+                                
+                                const resource = {
+                                    id: resourceId,
+                                    type: resourceType,
+                                    name: name,
+                                    status: 'error',
+                                    region: 'us-east-1'
+                                };
+                                
+                                console.log('💾 Salvando recurso com erro mas criado:', resource);
+                                resources.push(resource);
+                                saveCreatedResource(userId, resource);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
     
@@ -306,8 +382,6 @@ app.post('/api/aws/deploy', async (req, res) => {
 
         terraformInit.on('close', async (code) => {
             console.log(`Terraform init finalizado com código: ${code}`);
-            console.log('Init Output:', initOutput);
-            console.log('Init Error:', initError);
             
             if (code !== 0) {
                 console.error('Terraform init falhou com código:', code);
@@ -352,7 +426,7 @@ app.post('/api/aws/deploy', async (req, res) => {
                 console.log('Apply Output:', applyOutput);
                 console.log('Apply Error:', applyError);
                 
-                // Parse resources from output regardless of success/failure
+                // SEMPRE parse resources from output regardless of success/failure
                 const createdResources = parseResourcesFromOutput(allOutput, userId);
                 console.log('📋 Recursos criados detectados:', createdResources);
                 
@@ -361,7 +435,7 @@ app.post('/api/aws/deploy', async (req, res) => {
                     res.write(JSON.stringify({ 
                         type: 'error', 
                         message: `Deployment failed with code ${applyCode}. Error: ${applyError}`,
-                        resources: createdResources // Include any resources that were created before failure
+                        resources: createdResources // IMPORTANTE: Include any resources that were created before failure
                     }));
                 } else {
                     console.log('Terraform apply concluído com sucesso!');
