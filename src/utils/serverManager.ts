@@ -1,4 +1,3 @@
-
 export class ServerManager {
   private static isServerRunning = false;
   private static isInitialized = false;
