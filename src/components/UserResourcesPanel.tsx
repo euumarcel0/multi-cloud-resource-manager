@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -77,9 +76,10 @@ const UserResourcesPanel = () => {
         const resourcesData = data.resources || [];
         
         // Set region from credentials if not set
+        const defaultRegion = 'region' in awsAuth.credentials ? awsAuth.credentials.region : 'us-east-1';
         const resourcesWithRegion = resourcesData.map((resource: CreatedResource) => ({
           ...resource,
-          region: resource.region || awsAuth.credentials?.region || 'us-east-1'
+          region: resource.region || defaultRegion
         }));
         
         setResources(resourcesWithRegion);

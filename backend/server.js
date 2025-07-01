@@ -66,6 +66,9 @@ const parseResourcesFromOutput = (output, userId) => {
     const resources = [];
     const lines = output.split('\n');
     
+    console.log('🔍 Analisando output do Terraform para extrair recursos...');
+    console.log('Total de linhas:', lines.length);
+    
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         
@@ -75,6 +78,8 @@ const parseResourcesFromOutput = (output, userId) => {
             if (match) {
                 const resourceName = match[1].trim();
                 const resourceId = match[2];
+                
+                console.log('✅ Recurso encontrado:', resourceName, 'ID:', resourceId);
                 
                 // Parse resource type and name
                 const parts = resourceName.split('.');
@@ -90,13 +95,20 @@ const parseResourcesFromOutput = (output, userId) => {
                         region: 'us-east-1' // Default region
                     };
                     
+                    console.log('💾 Salvando recurso:', resource);
                     resources.push(resource);
                     saveCreatedResource(userId, resource);
                 }
             }
         }
+        
+        // Also look for failed resources
+        if (line.includes('Error: ') && line.includes('creating')) {
+            console.log('❌ Erro detectado na criação:', line);
+        }
     }
     
+    console.log(`📋 Total de recursos extraídos: ${resources.length}`);
     return resources;
 };
 
@@ -340,19 +352,19 @@ app.post('/api/aws/deploy', async (req, res) => {
                 console.log('Apply Output:', applyOutput);
                 console.log('Apply Error:', applyError);
                 
+                // Parse resources from output regardless of success/failure
+                const createdResources = parseResourcesFromOutput(allOutput, userId);
+                console.log('📋 Recursos criados detectados:', createdResources);
+                
                 if (applyCode !== 0) {
                     console.error('Terraform apply falhou com código:', applyCode);
                     res.write(JSON.stringify({ 
                         type: 'error', 
-                        message: `Terraform apply failed with code ${applyCode}. Error: ${applyError}` 
+                        message: `Deployment failed with code ${applyCode}. Error: ${applyError}`,
+                        resources: createdResources // Include any resources that were created before failure
                     }));
                 } else {
                     console.log('Terraform apply concluído com sucesso!');
-                    
-                    // Parse resources from output and save them
-                    const createdResources = parseResourcesFromOutput(allOutput, userId);
-                    console.log('📋 Recursos criados detectados:', createdResources);
-                    
                     res.write(JSON.stringify({ 
                         type: 'success', 
                         message: 'Deployment complete!',
@@ -360,8 +372,9 @@ app.post('/api/aws/deploy', async (req, res) => {
                     }));
                 }
                 
-                // Don't clean up files anymore - keep them for user management
-                console.log('📁 Arquivos mantidos na pasta do usuário:', userTempDir);
+                // NEVER clean up files - keep them for user management
+                console.log('📁 Arquivos MANTIDOS na pasta do usuário:', userTempDir);
+                console.log('📁 Arquivos preservados para gerenciamento futuro');
                 
                 res.end();
             });
